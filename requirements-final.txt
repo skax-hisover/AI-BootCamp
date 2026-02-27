@@ -1,0 +1,16 @@
+openai
+langchain
+langchain-core
+langchain-openai
+langchain-community
+langchain-text-splitters
+langgraph
+mcp
+fastapi
+uvicorn
+streamlit
+python-dotenv
+pandas
+faiss-cpu
+rank_bm25
+typing_extensions
