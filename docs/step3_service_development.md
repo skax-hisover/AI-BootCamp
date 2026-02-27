@@ -61,3 +61,12 @@ python scripts/run_streamlit.py
 - 검증 대상:
   - 세션 메모리 동작
   - Resume Tool/Interview Tool 기본 응답
+
+## 5) 필수 기술 요소 매핑 표
+
+| 필수 항목 | 반영 내용 | 구현 위치 |
+|---|---|---|
+| 1) Prompt Engineering | 역할 기반 프롬프트(Supervisor/Resume/Interview), Few-shot 예시 반영, 구조화 출력 지시 | `src/workflow/engine.py`, `src/agents/schemas.py` |
+| 2) LangChain/LangGraph Multi-Agent | Multi-Agent 그래프 구성, Tool Calling, 세션 메모리 활용 | `src/workflow/engine.py`, `src/agents/tools.py`, `src/utils/memory.py` |
+| 3) RAG | 문서 로딩/전처리/청킹, 임베딩, FAISS + BM25 하이브리드 검색, 근거 출처 반환 | `src/retrieval/documents.py`, `src/retrieval/hybrid.py`, `data/knowledge/*` |
+| 4) 서비스 개발/패키징 | Streamlit UI, FastAPI 백엔드, CLI 엔트리, 실행 스크립트, `.env` 설정 관리 | `src/ui/streamlit_app.py`, `src/api/app.py`, `main.py`, `scripts/*`, `src/config/*` |

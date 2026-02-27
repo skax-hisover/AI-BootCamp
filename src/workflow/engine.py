@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
 from typing_extensions import TypedDict
@@ -57,6 +57,43 @@ def _run_tool_loop(prompt: str, tools: list[BaseTool]) -> str:
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
     llm = get_chat_model(temperature=0.1)
+    resume_few_shot = """
+[Few-shot 예시 1]
+입력:
+- 목표 직무: 백엔드 개발자
+- 이력서 요약: "Spring 기반 API 개발, 성능 개선 경험 없음"
+출력 스타일:
+- 개선 포인트:
+  1) 성능 개선 지표(응답시간/처리량) 추가
+  2) DB 튜닝 사례(인덱스/쿼리 최적화) 명시
+  3) 장애 대응 경험과 재발 방지 액션 포함
+
+[Few-shot 예시 2]
+입력:
+- 목표 직무: 데이터 분석가
+- 이력서 요약: "대시보드 제작 경험 위주"
+출력 스타일:
+- 개선 포인트:
+  1) 문제 정의 -> 분석 -> 인사이트 -> 비즈니스 임팩트 흐름으로 재작성
+  2) SQL/Python 사용 범위와 자동화 범위 구체화
+  3) 지표 개선 수치(예: 전환율 12% 상승) 추가
+""".strip()
+
+    interview_few_shot = """
+[Few-shot 예시 1]
+입력: 백엔드 개발자 면접 준비
+출력 스타일:
+- 예상 질문: 대규모 트래픽 환경의 병목 해결 경험?
+- 답변 방향: 병목 식별 -> 대안 비교 -> 적용 결과 수치
+- 피해야 할 패턴: "그냥 캐시 썼다" 식의 근거 없는 답변
+
+[Few-shot 예시 2]
+입력: PM 면접 준비
+출력 스타일:
+- 예상 질문: 우선순위 충돌 상황 의사결정 사례?
+- 답변 방향: 목표 지표 -> 이해관계자 조율 -> 결과/회고
+- 피해야 할 패턴: 개인 의견만 강조하고 데이터/지표 근거 누락
+""".strip()
 
     def supervisor_node(state: AgentState) -> AgentState:
         return {
@@ -82,6 +119,10 @@ RAG 근거:
 지시:
 1) resume_keyword_match_score 도구를 활용해 키워드 적합도를 반영하세요.
 2) 불필요한 설명 없이, 개선 포인트 중심으로 6줄 이내로 작성하세요.
+3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
+
+[Few-shot]
+{resume_few_shot}
 """
         result = _run_tool_loop(prompt, [resume_keyword_match_score])
         return {"resume_notes": result}
@@ -98,6 +139,10 @@ RAG 근거:
 지시:
 1) interview_question_bank 도구를 활용해 질문 세트를 참고하세요.
 2) 예상 질문 + 답변 방향 + 피해야 할 답변 패턴을 핵심만 제시하세요.
+3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
+
+[Few-shot]
+{interview_few_shot}
 """
         result = _run_tool_loop(prompt, [interview_question_bank])
         return {"interview_notes": result}
