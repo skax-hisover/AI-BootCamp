@@ -1,25 +1,69 @@
-﻿# Final Project (Python)
+﻿# JobPilot AI - Final Project
 
-This folder is for final submission code only.
+JobPilot AI is an end-to-end multi-agent service for job preparation and career transition support.
 
-## Quick Start
+## What Is Implemented
 
-1. Create a virtual environment.
-2. Install dependencies from `..\requirements-final.txt`.
-3. Copy `.env.example` to `.env` and fill values.
-4. Run:
+- **Prompt Engineering**: role-based prompts for Supervisor/Resume/Interview agents
+- **Multi-Agent (LangGraph)**: Supervisor -> RAG -> Resume Agent -> Interview Agent -> Synthesis
+- **RAG**: document loading, chunking, FAISS vector retrieval + BM25 keyword retrieval
+- **Structured Output**: final response generated with Pydantic schema
+- **Service Packaging**: FastAPI backend and Streamlit UI
+- **Modular Code**: reusable modules under `src/` for config/retrieval/workflow/ui/api
+
+## Folder Layout
+
+- `data/knowledge`: RAG source documents (`.txt/.md/.csv`)
+- `docs`: planning/design docs for submission (`step2_planning_design.md`, `step3_service_development.md`)
+- `scripts`: runnable launch scripts
+- `src/config`: `.env` loading and model clients
+- `src/retrieval`: data loading, chunking, hybrid retrieval
+- `src/agents`: tools and structured response schema
+- `src/workflow`: LangGraph workflow and service layer
+- `src/api`: FastAPI app
+- `src/ui`: Streamlit app
+
+## Environment Setup
+
+1. Install dependencies:
 
 ```powershell
-python main.py
+pip install -r requirements-final.txt
 ```
 
-## Structure
+2. Create `.env` in this folder:
 
-- `src/config`: environment and runtime settings
-- `src/agents`: agent definitions
-- `src/retrieval`: retrieval and indexing logic
-- `src/workflow`: orchestration logic
-- `src/api`: FastAPI endpoints (optional)
-- `src/ui`: Streamlit UI (optional)
-- `src/utils`: shared utilities
-- `tests`: test code
+```powershell
+Copy-Item .env.example .env
+```
+
+3. Fill required values in `.env`:
+
+- `AOAI_ENDPOINT`
+- `AOAI_API_KEY`
+- `AOAI_DEPLOY_GPT4O`
+- `AOAI_DEPLOY_EMBED_ADA` (or `AOAI_EMBEDDING_DEPLOYMENT`)
+- `AOAI_API_VERSION`
+
+## Run Options
+
+### 1) CLI (quick test)
+
+```powershell
+python main.py --query "백엔드 이직을 위해 이력서 개선 포인트와 2주 계획을 작성해줘" --target-role "백엔드 개발자"
+```
+
+### 2) FastAPI
+
+```powershell
+python scripts/run_api.py
+```
+
+- Health: `http://127.0.0.1:8000/health`
+- Chat endpoint: `POST http://127.0.0.1:8000/chat`
+
+### 3) Streamlit
+
+```powershell
+python scripts/run_streamlit.py
+```

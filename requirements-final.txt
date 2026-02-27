@@ -11,6 +11,8 @@ uvicorn
 streamlit
 python-dotenv
 pandas
+numpy
 faiss-cpu
 rank_bm25
 typing_extensions
+pytest
