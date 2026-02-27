@@ -69,6 +69,11 @@ python scripts/run_api.py
 python scripts/run_streamlit.py
 ```
 
+- UI supports resume file upload: `.txt`, `.md`, `.pdf`, `.docx`, `.xlsx`
+- Session ID is managed internally; use `새 대화 시작` button for a fresh session
+- Sidebar provides input history view/delete for previous agent runs
+- `다시 불러오기` restores query, target role, resume text, and previous agent result
+
 ## Troubleshooting
 
 - `ModuleNotFoundError: No module named 'src'`

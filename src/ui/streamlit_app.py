@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+from uuid import uuid4
+
+import pandas as pd
 import streamlit as st
 
 from src.workflow import ChatRequest, JobPilotService
@@ -12,28 +16,145 @@ def get_service() -> JobPilotService:
     return JobPilotService()
 
 
+def _extract_uploaded_text(uploaded_file) -> str:
+    name = (uploaded_file.name or "").lower()
+    data = uploaded_file.getvalue()
+
+    if name.endswith(".txt") or name.endswith(".md"):
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data.decode("cp949", errors="ignore")
+
+    if name.endswith(".pdf"):
+        try:
+            from pypdf import PdfReader
+        except ModuleNotFoundError:
+            st.warning("PDF 파싱을 위해 pypdf 설치가 필요합니다.")
+            return ""
+        reader = PdfReader(BytesIO(data))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        return "\n".join(pages).strip()
+
+    if name.endswith(".docx"):
+        try:
+            from docx import Document as DocxDocument
+        except ModuleNotFoundError:
+            st.warning("DOCX 파싱을 위해 python-docx 설치가 필요합니다.")
+            return ""
+        doc = DocxDocument(BytesIO(data))
+        lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        return "\n".join(lines).strip()
+
+    if name.endswith(".xlsx"):
+        try:
+            xls = pd.ExcelFile(BytesIO(data))
+        except Exception as exc:
+            st.warning(f"XLSX 파일 파싱에 실패했습니다: {exc}")
+            return ""
+        blocks: list[str] = []
+        for sheet in xls.sheet_names:
+            df = pd.read_excel(xls, sheet_name=sheet).fillna("")
+            rows = [" | ".join(map(str, row)) for row in df.values.tolist()]
+            blocks.append(f"[sheet: {sheet}]\n" + "\n".join(rows))
+        return "\n\n".join(blocks).strip()
+
+    st.warning("지원하지 않는 파일 형식입니다. txt/md/pdf/docx/xlsx 파일을 업로드해 주세요.")
+    return ""
+
+
 def run() -> None:
     st.set_page_config(page_title="JobPilot AI", page_icon=":briefcase:", layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
     st.caption("Resume Agent + Interview Agent + RAG Agent")
 
     if "session_id" not in st.session_state:
-        st.session_state.session_id = "streamlit-default"
+        st.session_state.session_id = f"session-{uuid4().hex[:8]}"
+    if "input_history" not in st.session_state:
+        st.session_state.input_history = []
+    if "resume_text_input" not in st.session_state:
+        st.session_state.resume_text_input = ""
+    if "query_input" not in st.session_state:
+        st.session_state.query_input = ""
+    if "target_role_input" not in st.session_state:
+        st.session_state.target_role_input = "백엔드 개발자"
+    if "last_response" not in st.session_state:
+        st.session_state.last_response = None
 
     with st.sidebar:
         st.subheader("입력 설정")
-        target_role = st.selectbox(
+        st.caption("세션은 내부적으로 자동 관리됩니다.")
+        if st.button("새 대화 시작", use_container_width=True):
+            st.session_state.session_id = f"session-{uuid4().hex[:8]}"
+            st.session_state.resume_text_input = ""
+            st.session_state.query_input = ""
+            st.session_state.target_role_input = "백엔드 개발자"
+            st.session_state.last_response = None
+            st.success("새 세션으로 전환되었습니다.")
+            st.rerun()
+
+        with st.expander("실행 입력 기록(조회/삭제)", expanded=False):
+            history = st.session_state.input_history
+            if not history:
+                st.caption("아직 실행 기록이 없습니다.")
+            else:
+                for idx, item in enumerate(reversed(history), start=1):
+                    real_idx = len(history) - idx
+                    st.markdown(f"**{idx}. {item['query']}**")
+                    st.caption(
+                        f"직무: {item['target_role']} | 세션: {item['session_id']} | 이력서 길이: {item['resume_len']}자"
+                    )
+                    col_a, col_b = st.columns(2)
+                    if col_a.button("다시 불러오기", key=f"load_{real_idx}", use_container_width=True):
+                        st.session_state.session_id = item.get("session_id", st.session_state.session_id)
+                        st.session_state.query_input = item.get("query", "")
+                        st.session_state.target_role_input = item.get("target_role", "백엔드 개발자")
+                        st.session_state.resume_text_input = item.get("resume_text", "")
+                        st.session_state.last_response = item.get("response")
+                        st.info("질문/직무/이력서/결과를 복원했습니다.")
+                        st.rerun()
+                    if col_b.button("삭제", key=f"delete_{real_idx}", use_container_width=True):
+                        del st.session_state.input_history[real_idx]
+                        st.rerun()
+                if st.button("기록 전체 삭제", type="secondary", use_container_width=True):
+                    st.session_state.input_history = []
+                    st.rerun()
+
+        st.selectbox(
             "목표 직무",
             ["백엔드 개발자", "데이터 분석가", "PM"],
-            index=0,
+            key="target_role_input",
         )
-        session_id = st.text_input("세션 ID", value=st.session_state.session_id)
-        st.session_state.session_id = session_id.strip() or "streamlit-default"
 
-    query = st.text_area("질문/요청", placeholder="예) 백엔드 이직을 위해 이력서 개선 포인트와 2주 계획을 만들어줘")
-    resume_text = st.text_area("이력서 텍스트(선택)", height=200)
+    st.text_area(
+        "질문/요청",
+        placeholder="예) 백엔드 이직을 위해 이력서 개선 포인트와 2주 계획을 만들어줘",
+        key="query_input",
+    )
+    uploaded_resume = st.file_uploader(
+        "이력서 파일 업로드(선택)",
+        type=["txt", "md", "pdf", "docx", "xlsx"],
+        help="업로드하면 파일 내용이 아래 이력서 텍스트에 자동 반영됩니다.",
+    )
+
+    extracted_resume = ""
+    if uploaded_resume is not None:
+        extracted_resume = _extract_uploaded_text(uploaded_resume)
+        if extracted_resume:
+            st.success(f"파일 분석 완료: {uploaded_resume.name}")
+            st.session_state.resume_text_input = extracted_resume
+
+    resume_text = st.text_area(
+        "이력서 텍스트(선택)",
+        height=220,
+        placeholder="여기에 직접 붙여넣거나, 위에서 파일 업로드를 사용하세요.",
+        key="resume_text_input",
+    )
+    resume_text = st.session_state.resume_text_input
 
     if st.button("에이전트 실행", type="primary", use_container_width=True):
+        query = st.session_state.query_input
+        target_role = st.session_state.target_role_input
         if not query.strip():
             st.warning("질문/요청을 입력해 주세요.")
             return
@@ -49,26 +170,42 @@ def run() -> None:
                 )
             )
 
+        st.session_state.input_history.append(
+            {
+                "session_id": st.session_state.session_id,
+                "query": query.strip(),
+                "target_role": target_role,
+                "resume_text": resume_text,
+                "resume_len": len(resume_text),
+                "response": response.model_dump(),
+            }
+        )
+        st.session_state.last_response = response.model_dump()
+        # Rerun to refresh sidebar history immediately after append.
+        st.rerun()
+
+    if st.session_state.last_response:
+        latest = st.session_state.last_response
         st.success("분석 완료")
         st.subheader("요약")
-        st.write(response.summary)
+        st.write(latest["summary"])
 
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("이력서 개선")
-            for item in response.resume_improvements:
+            for item in latest["resume_improvements"]:
                 st.markdown(f"- {item}")
         with col2:
             st.subheader("면접 준비")
-            for item in response.interview_preparation:
+            for item in latest["interview_preparation"]:
                 st.markdown(f"- {item}")
 
         st.subheader("2주 실행 계획")
-        for item in response.two_week_plan:
+        for item in latest["two_week_plan"]:
             st.markdown(f"- {item}")
 
         st.subheader("참고 출처")
-        for item in response.references:
+        for item in latest["references"]:
             st.markdown(f"- {item}")
 
 
