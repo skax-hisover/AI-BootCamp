@@ -1,4 +1,4 @@
-﻿"""CLI entry point for JobPilot AI."""
+"""CLI entry point for JobPilot AI."""
 
 from __future__ import annotations
 

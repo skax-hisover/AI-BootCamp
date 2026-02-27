@@ -1,4 +1,4 @@
-﻿# JobPilot AI - Final Project
+# JobPilot AI - Final Project
 
 JobPilot AI is an end-to-end multi-agent service for job preparation and career transition support.
 
@@ -6,14 +6,15 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 
 - **Prompt Engineering**: role-based prompts for Supervisor/Resume/Interview agents
 - **Multi-Agent (LangGraph)**: Supervisor -> RAG -> Resume Agent -> Interview Agent -> Synthesis
-- **RAG**: document loading, chunking, FAISS vector retrieval + BM25 keyword retrieval
+- **RAG**: document loading (`.txt/.md/.csv/.pdf/.docx/.xlsx`), chunking, FAISS vector retrieval + BM25 keyword retrieval
 - **Structured Output**: final response generated with Pydantic schema
 - **Service Packaging**: FastAPI backend and Streamlit UI
+- **Resilience**: API-level exception handling for user-friendly error responses
 - **Modular Code**: reusable modules under `src/` for config/retrieval/workflow/ui/api
 
 ## Folder Layout
 
-- `data/knowledge`: RAG source documents (`.txt/.md/.csv`)
+- `data/knowledge`: RAG source documents (`.txt/.md/.csv/.pdf/.docx/.xlsx`)
 - `docs`: planning/design docs for submission (`step2_planning_design.md`, `step3_service_development.md`)
 - `scripts`: runnable launch scripts
 - `src/config`: `.env` loading and model clients
@@ -67,3 +68,14 @@ python scripts/run_api.py
 ```powershell
 python scripts/run_streamlit.py
 ```
+
+## Troubleshooting
+
+- `ModuleNotFoundError: No module named 'src'`
+  - Always run from `final-project` root.
+  - Use `python scripts/run_api.py` instead of direct uvicorn commands.
+- `Missing environment variables: AOAI_ENDPOINT`
+  - Check `final-project/.env` and required keys.
+- API returns `400` or `500` on `/chat`
+  - `400`: input/config issues (e.g., missing env variables)
+  - `500`: runtime/model/retrieval issues; check terminal error details

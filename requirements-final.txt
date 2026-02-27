@@ -12,6 +12,9 @@ streamlit
 python-dotenv
 pandas
 numpy
+pypdf
+python-docx
+openpyxl
 faiss-cpu
 rank_bm25
 typing_extensions

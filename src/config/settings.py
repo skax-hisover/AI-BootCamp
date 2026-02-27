@@ -1,4 +1,4 @@
-﻿"""Shared settings loader for the final project."""
+"""Shared settings loader for the final project."""
 
 from __future__ import annotations
 
@@ -32,7 +32,11 @@ def load_settings() -> Settings:
     env_path = project_root / ".env"
     load_dotenv(dotenv_path=env_path, override=False)
 
-    endpoint = os.getenv("AOAI_ENDPOINT") or os.getenv("AZURE_OPENAI_ENDPOINT")
+    endpoint = (
+        os.getenv("AOAI_ENDPOINT")
+        or os.getenv("\ufeffAOAI_ENDPOINT")
+        or os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
     api_key = os.getenv("AOAI_API_KEY") or os.getenv("AZURE_OPENAI_API_KEY")
     deployment = os.getenv("AOAI_DEPLOY_GPT4O") or os.getenv("AZURE_OPENAI_DEPLOYMENT") or "gpt-4o"
     embedding_deployment = (

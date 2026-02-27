@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from src.workflow import ChatRequest, JobPilotService
 
@@ -24,5 +24,13 @@ def health() -> dict[str, str]:
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    service = get_service()
-    return service.run(req).model_dump()
+    try:
+        service = get_service()
+        return service.run(req).model_dump()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"JobPilot service failed: {exc}",
+        ) from exc

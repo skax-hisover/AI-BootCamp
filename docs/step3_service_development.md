@@ -7,6 +7,7 @@
 - Structured Output(Pydantic) 기반 최종 응답 생성
 - Streamlit UI + FastAPI API + CLI 실행 경로 제공
 - `.env` 기반 Azure OpenAI 설정 로딩 및 모듈 분리
+- API 예외 처리(400/500) 기반 안정적 오류 응답 구성
 
 ## 2) 핵심 파일
 
@@ -68,5 +69,11 @@ python scripts/run_streamlit.py
 |---|---|---|
 | 1) Prompt Engineering | 역할 기반 프롬프트(Supervisor/Resume/Interview), Few-shot 예시 반영, 구조화 출력 지시 | `src/workflow/engine.py`, `src/agents/schemas.py` |
 | 2) LangChain/LangGraph Multi-Agent | Multi-Agent 그래프 구성, Tool Calling, 세션 메모리 활용 | `src/workflow/engine.py`, `src/agents/tools.py`, `src/utils/memory.py` |
-| 3) RAG | 문서 로딩/전처리/청킹, 임베딩, FAISS + BM25 하이브리드 검색, 근거 출처 반환 | `src/retrieval/documents.py`, `src/retrieval/hybrid.py`, `data/knowledge/*` |
-| 4) 서비스 개발/패키징 | Streamlit UI, FastAPI 백엔드, CLI 엔트리, 실행 스크립트, `.env` 설정 관리 | `src/ui/streamlit_app.py`, `src/api/app.py`, `main.py`, `scripts/*`, `src/config/*` |
+| 3) RAG | 문서 로딩/전처리/청킹, 임베딩, FAISS + BM25 하이브리드 검색, 근거 출처 반환 (`.txt/.md/.csv/.pdf/.docx/.xlsx`) | `src/retrieval/documents.py`, `src/retrieval/hybrid.py`, `data/knowledge/*` |
+| 4) 서비스 개발/패키징 | Streamlit UI, FastAPI 백엔드, CLI 엔트리, 실행 스크립트, `.env` 설정 관리, API 예외 처리 | `src/ui/streamlit_app.py`, `src/api/app.py`, `main.py`, `scripts/*`, `src/config/*` |
+
+## 6) 최근 현행화 반영 사항
+
+- RAG 문서 로더 지원 포맷 확대: `.pdf`, `.docx`, `.xlsx` 추가
+- FastAPI `/chat` 예외 처리 강화: `ValueError -> 400`, 기타 예외 -> `500`
+- 실행/운영 문서 업데이트: README Troubleshooting 섹션 추가

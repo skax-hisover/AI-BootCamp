@@ -64,7 +64,7 @@
   Supervisor가 사용자 요청을 분류/라우팅하고, 전문 Agent 결과를 통합해 최종 응답 생성
 
 - **각 Agent의 역할(Role) 정의**  
-  - `Planner/Supervisor`: 요청 분해, 우선순위 결정, 결과 통합  
+  - `Supervisor(Planner 역할 포함)`: 요청 분해, 우선순위 결정, 결과 통합  
   - `Resume Agent`: 이력서/포트폴리오 개선  
   - `Interview Agent`: 예상 질문/답변 코칭  
   - `RAG Agent`: 지식 검색 및 근거 제공
@@ -75,7 +75,7 @@
 ### **2.3 RAG 구성**
 
 - **데이터 수집/전처리 파이프라인**  
-  채용공고, 직무기술서, 면접 가이드, 포트폴리오 예시 문서(PDF/DOCX/XLSX) 수집 -> 정규화 -> 청킹
+  채용공고, 직무기술서, 면접 가이드, 포트폴리오 예시 문서(TXT/MD/CSV/PDF/DOCX/XLSX) 수집 -> 정규화 -> 청킹
 
 - **임베딩 모델 및 Vector DB 선택**  
   `text-embedding-ada-002`(환경변수 `AOAI_DEPLOY_EMBED_ADA`) + FAISS
@@ -89,7 +89,7 @@
   Streamlit 기반 대화형 UI(프로필 입력, 문서 업로드, 결과 카드)
 
 - **BE(API) 및 배포 전략(FastAPI, Docker 등)**  
-  FastAPI로 Agent 실행 API 분리, 로컬 Docker 옵션 제공(선택)
+  FastAPI로 Agent 실행 API 분리, 예외 처리(400/500)로 사용자 친화적 오류 응답 제공, 로컬 Docker 옵션 제공(선택)
 
 - **설정/환경 관리 계획**  
   `final-project/.env` 사용, `src/config/settings.py`에서 로드, `requirements-final.txt`로 의존성 고정
@@ -125,10 +125,9 @@
 ```mermaid
 flowchart TD
     U[User/Streamlit UI] --> S[Supervisor Agent]
-    S --> P[Planner Logic]
-    P --> R1[Resume Agent]
-    P --> I1[Interview Agent]
-    P --> G1[RAG Agent]
+    S --> R1[Resume Agent]
+    S --> I1[Interview Agent]
+    S --> G1[RAG Agent]
     G1 --> V[(FAISS Vector DB)]
     G1 --> B[(BM25 Index)]
     R1 --> S
