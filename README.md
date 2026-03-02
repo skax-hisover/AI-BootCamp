@@ -24,6 +24,11 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 - `src/api`: FastAPI app
 - `src/ui`: Streamlit app
 
+## Submission Docs
+
+- [Step2 - 기획 및 설계](./docs/step2_planning_design.md)
+- [Step3 - 서비스 개발](./docs/step3_service_development.md)
+
 ## Environment Setup
 
 1. Install dependencies:
