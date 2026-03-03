@@ -192,10 +192,11 @@ sequenceDiagram
   4) 2주 실행 계획과 참고 출처를 제공함.
 
 - **데모 이미지 or 영상 등**  
-  최종 제출 시 아래 산출물 첨부 예정:  
-  - Streamlit 메인 화면 캡처(입력/출력)  
-  - Agent 실행 로그 캡처(라우팅/검색 근거)  
-  - 1~2분 데모 영상(시나리오 1회 실행)
+  제출용 산출물은 `docs/evidence/`에 관리함:  
+  - `docs/evidence/streamlit_main_capture.png` (Streamlit 메인 화면 캡처: 입력/출력 동시 노출)  
+  - `docs/evidence/agent_execution_log.md` (Supervisor 라우팅 + RAG 검색 근거)  
+  - `docs/evidence/agent_final_answer.json` (최종 구조화 응답 원본)  
+  - (선택) 1~2분 데모 영상(시나리오 1회 실행)
 
 ## **5. 프로젝트 수행 소감 / 피드백**
 
