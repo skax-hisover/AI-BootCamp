@@ -15,6 +15,7 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 ## Folder Layout
 
 - `data/knowledge`: RAG source documents (`.txt/.md/.csv/.pdf/.docx/.xlsx`)
+  - recommended categories: `job_postings/`, `jd/`, `interview_guides/`, `portfolio_examples/`
 - `docs`: planning/design docs for submission (`step2_planning_design.md`, `step3_service_development.md`)
 - `scripts`: runnable launch scripts
 - `src/config`: `.env` loading and model clients
@@ -28,6 +29,8 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 
 - [Step2 - 기획 및 설계](./docs/step2_planning_design.md)
 - [Step3 - 서비스 개발](./docs/step3_service_development.md)
+- [System Architecture Image](./docs/images/system_architecture.png)
+- [Service Flow Image](./docs/images/service_flow_sequence.png)
 
 ## Environment Setup
 

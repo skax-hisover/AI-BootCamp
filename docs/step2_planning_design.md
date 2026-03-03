@@ -83,6 +83,12 @@
 - **검색 로직과 응답 생성 방식**  
   하이브리드 검색(BM25 + 벡터 유사도) -> 상위 문서 재정렬 -> 출처 포함 응답 생성
 
+- **도메인 지식 범위(출처 유형/라이선스/최신성)**  
+  - 출처 유형: 채용공고 요약본, 직무기술서(JD) 정리본, 면접 가이드, 포트폴리오 작성 예시  
+  - 저장 경로/카테고리: `data/knowledge/job_postings/*`, `data/knowledge/jd/*`, `data/knowledge/interview_guides/*`, `data/knowledge/portfolio_examples/*`  
+  - 라이선스 원칙: 공개적으로 활용 가능한 문서/직접 작성한 요약본 중심으로 구성하며, 저작권 제약이 있는 원문은 전문 저장 대신 요약/메타데이터만 반영  
+  - 최신성 관리: 월 1회 이상 문서 갱신 점검(수집일/수정일 메타 기록), 오래된 공고/가이드는 우선순위 하향 처리
+
 ### **2.4 서비스 개발 및 패키징 계획**
 
 - **UI 개발 방식(Streamlit, React 등)**  
@@ -140,6 +146,8 @@ flowchart TD
 > Preview에서 Mermaid가 보이지 않을 경우를 대비해, 아래 이미지 버전을 함께 첨부합니다.
 >
 > ![시스템 구조도](./images/system_architecture.png)
+>
+> - 이미지 산출물 경로: `docs/images/system_architecture.png`
 
 ### **3.3 서비스 플로우(Flow Chart / Sequence Diagram 등)**
 
@@ -169,6 +177,8 @@ sequenceDiagram
 > Preview에서 Mermaid가 보이지 않을 경우를 대비해, 아래 이미지 버전을 함께 첨부합니다.
 >
 > ![서비스 플로우](./images/service_flow_sequence.png)
+>
+> - 이미지 산출물 경로: `docs/images/service_flow_sequence.png`
 
 ## **4. 실행 결과**
 

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph import END, StateGraph
+from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from src.agents.schemas import FinalAnswer
 from src.agents.tools import interview_question_bank, resume_keyword_match_score
-from src.config import get_chat_model
+from src.config import get_chat_model, load_settings
 from src.retrieval import HybridRetriever
 from src.utils.memory import SessionMemory
 from src.workflow.contracts import ChatRequest, ChatResponse
@@ -25,34 +26,75 @@ class AgentState(TypedDict, total=False):
     memory_messages: list[dict[str, str]]
     rag_context: str
     rag_refs: list[str]
+    route: str
+    routing_reason: str
     resume_notes: str
     interview_notes: str
     final_answer: dict[str, Any]
 
 
-def _run_tool_loop(prompt: str, tools: list[BaseTool]) -> str:
+class RouteDecision(BaseModel):
+    route: Literal["resume_only", "interview_only", "full", "plan_only"] = Field(
+        description="Supervisor가 선택한 라우팅 결과"
+    )
+    reason: str = Field(description="해당 라우팅을 선택한 이유")
+
+
+class RagPlan(BaseModel):
+    rewritten_queries: list[str] = Field(default_factory=list, description="재검색용 쿼리 목록")
+    source_hint: str = Field(
+        default="", description="우선 확인할 문서/키워드 힌트(예: backend, data, pm)"
+    )
+
+
+def _normalize_content(content: Any) -> str:
+    text = content if isinstance(content, str) else str(content)
+    return text.replace("DONE", "").strip()
+
+
+def _run_tool_loop(prompt: str, tools: list[BaseTool], max_steps: int = 4) -> str:
     llm = get_chat_model(temperature=0.2).bind_tools(tools)
     messages = [HumanMessage(content=prompt)]
-    response = llm.invoke(messages)
-    tool_messages: list[ToolMessage] = []
-    for call in response.tool_calls:
-        for tool in tools:
-            if tool.name == call["name"]:
-                output = tool.invoke(call.get("args", {}))
-                tool_messages.append(
+    for _ in range(max_steps):
+        response = llm.invoke(messages)
+        messages.append(response)
+
+        if not response.tool_calls:
+            return _normalize_content(response.content)
+
+        for call in response.tool_calls:
+            matched_tool = next((tool for tool in tools if tool.name == call["name"]), None)
+            if not matched_tool:
+                messages.append(
                     ToolMessage(
-                        content=str(output),
+                        content=f"Unknown tool: {call['name']}",
                         tool_call_id=call["id"],
-                        name=tool.name,
+                        name=call["name"],
                     )
                 )
-                break
+                continue
 
-    if not tool_messages:
-        return response.content if isinstance(response.content, str) else str(response.content)
+            output = matched_tool.invoke(call.get("args", {}))
+            messages.append(
+                ToolMessage(
+                    content=str(output),
+                    tool_call_id=call["id"],
+                    name=matched_tool.name,
+                )
+            )
 
-    final = get_chat_model(temperature=0.2).invoke([messages[0], response, *tool_messages])
-    return final.content if isinstance(final.content, str) else str(final.content)
+    final = get_chat_model(temperature=0.2).invoke(
+        [
+            *messages,
+            HumanMessage(
+                content=(
+                    "도구 결과를 종합해 최종 답변만 간결히 작성하고 마지막에 DONE을 붙이세요. "
+                    "반드시 한국어로만 작성하세요."
+                )
+            ),
+        ]
+    )
+    return _normalize_content(final.content)
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
@@ -95,19 +137,111 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 - 피해야 할 패턴: 개인 의견만 강조하고 데이터/지표 근거 누락
 """.strip()
 
+    def _route_by_supervisor(state: AgentState) -> AgentState:
+        router = llm.with_structured_output(RouteDecision)
+        history_text = "\n".join(
+            f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
+        ) or "없음"
+        try:
+            decision = router.invoke(
+                f"""
+너는 Supervisor Planner다. 사용자 요청을 보고 실행 라우트를 고른다.
+
+선택 가능한 route:
+- resume_only: 이력서 개선 중심
+- interview_only: 면접 대비 중심
+- full: 이력서 + 면접 + 통합 실행
+- plan_only: 종합 실행 계획 위주(간단 조언)
+
+[사용자 요청]
+{state['user_query']}
+
+[목표 직무]
+{state['target_role']}
+
+[최근 메모리]
+{history_text}
+"""
+            )
+            return {"route": decision.route, "routing_reason": decision.reason}
+        except Exception:
+            return {"route": "full", "routing_reason": "파싱 실패로 full 라우트 기본 적용"}
+
     def supervisor_node(state: AgentState) -> AgentState:
-        return {
+        base_state: AgentState = {
             "memory_messages": memory.get(state["session_id"], limit=8),
         }
+        base_state.update(_route_by_supervisor(base_state | state))
+        return base_state
+
+    def _infer_role_hint(target_role: str) -> str:
+        role = target_role.lower()
+        if "백엔드" in target_role or "backend" in role:
+            return "backend, api, server, database"
+        if "데이터" in target_role or "data" in role:
+            return "data, sql, analytics, dashboard"
+        if "pm" in role or "기획" in target_role or "product" in role:
+            return "pm, product, roadmap, metric"
+        return target_role
+
+    def _is_role_relevant(text: str, hint: str) -> bool:
+        keywords = [token.strip().lower() for token in hint.split(",") if token.strip()]
+        lowered = text.lower()
+        return any(keyword in lowered for keyword in keywords) if keywords else True
 
     def rag_node(state: AgentState) -> AgentState:
-        context, refs = retriever.search_as_context(state["user_query"])
+        planner = llm.with_structured_output(RagPlan)
+        role_hint = _infer_role_hint(state["target_role"])
+        try:
+            rag_plan = planner.invoke(
+                f"""
+너는 RAG Agent다. 검색 품질을 높이기 위해 쿼리를 2~3개로 재작성하라.
+route={state.get('route', 'full')}
+user_query={state['user_query']}
+target_role={state['target_role']}
+source_hint는 직무 연관 키워드로 짧게 작성하라.
+"""
+            )
+            query_candidates = [state["user_query"], *rag_plan.rewritten_queries]
+            source_hint = rag_plan.source_hint or role_hint
+        except Exception:
+            query_candidates = [state["user_query"], f"{state['target_role']} {state['user_query']}"]
+            source_hint = role_hint
+
+        merged_hits: dict[str, dict[str, Any]] = {}
+        for candidate in query_candidates[:3]:
+            for hit in retriever.search(candidate, top_k=4):
+                key = f"{hit.source}::{hit.content[:120]}"
+                boosted = hit.score + (
+                    0.15 if _is_role_relevant(f"{hit.source} {hit.content}", source_hint) else 0.0
+                )
+                current = merged_hits.get(key)
+                if not current or boosted > current["score"]:
+                    merged_hits[key] = {
+                        "content": hit.content,
+                        "source": hit.source,
+                        "score": round(boosted, 4),
+                    }
+
+        ranked_hits = sorted(merged_hits.values(), key=lambda item: item["score"], reverse=True)[:4]
+        context_parts: list[str] = []
+        refs: list[dict[str, Any]] = []
+        for i, hit in enumerate(ranked_hits, start=1):
+            context_parts.append(f"[{i}] ({hit['source']}, score={hit['score']})\n{hit['content']}")
+            refs.append({"rank": i, "source": hit["source"], "score": hit["score"]})
+
+        if not context_parts:
+            context_parts = ["검색 결과가 부족하여 일반적인 직무 가이드를 기반으로 응답합니다."]
+
         ref_names = [f"{r['rank']}. {r['source']} (score={r['score']})" for r in refs]
-        return {"rag_context": context, "rag_refs": ref_names}
+        rag_context = "\n\n".join(context_parts)
+        rag_context += f"\n\n[rag-agent-note] route={state.get('route', 'full')}, source_hint={source_hint}"
+        return {"rag_context": rag_context, "rag_refs": ref_names}
 
     def resume_node(state: AgentState) -> AgentState:
         prompt = f"""
 당신은 Resume Agent입니다.
+중요: 답변은 반드시 한국어로만 작성하세요.
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 사용자 이력서:
@@ -123,6 +257,8 @@ RAG 근거:
 
 [Few-shot]
 {resume_few_shot}
+
+충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
         result = _run_tool_loop(prompt, [resume_keyword_match_score])
         return {"resume_notes": result}
@@ -130,6 +266,7 @@ RAG 근거:
     def interview_node(state: AgentState) -> AgentState:
         prompt = f"""
 당신은 Interview Agent입니다.
+중요: 답변은 반드시 한국어로만 작성하세요.
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 
@@ -143,6 +280,8 @@ RAG 근거:
 
 [Few-shot]
 {interview_few_shot}
+
+충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
         result = _run_tool_loop(prompt, [interview_question_bank])
         return {"interview_notes": result}
@@ -152,10 +291,13 @@ RAG 근거:
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
         )
+        resume_notes = state.get("resume_notes", "이번 라우트에서는 Resume Agent를 생략했습니다.")
+        interview_notes = state.get("interview_notes", "이번 라우트에서는 Interview Agent를 생략했습니다.")
         answer = parser_llm.invoke(
             f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
+모든 필드(summary, resume_improvements, interview_preparation, two_week_plan, references)는 반드시 한국어로 작성하세요.
 
 [사용자 요청]
 {state['user_query']}
@@ -166,17 +308,21 @@ RAG 근거:
 [최근 대화 메모리]
 {history_text or '없음'}
 
+[Supervisor 라우팅]
+- route: {state.get('route', 'full')}
+- reason: {state.get('routing_reason', '기본 라우트')}
+
 [Resume Agent 결과]
-{state['resume_notes']}
+{resume_notes}
 
 [Interview Agent 결과]
-{state['interview_notes']}
+{interview_notes}
 
 [RAG 근거]
-{state['rag_context']}
+{state.get('rag_context', 'RAG 단계를 생략했습니다.')}
 
 [참고 출처]
-{state['rag_refs']}
+{state.get('rag_refs', [])}
 
 요구사항:
 - summary는 4문장 이내.
@@ -186,6 +332,25 @@ RAG 근거:
         )
         return {"final_answer": answer.model_dump()}
 
+    def route_after_supervisor(state: AgentState) -> str:
+        route = state.get("route", "full")
+        if route == "plan_only":
+            return "synthesis"
+        if route in {"full", "resume_only", "interview_only"}:
+            return "rag"
+        return "rag"
+
+    def route_after_rag(state: AgentState) -> str:
+        route = state.get("route", "full")
+        if route in {"full", "resume_only"}:
+            return "resume"
+        if route == "interview_only":
+            return "interview"
+        return "synthesis"
+
+    def route_after_resume(state: AgentState) -> str:
+        return "interview" if state.get("route", "full") == "full" else "synthesis"
+
     graph = StateGraph(AgentState)
     graph.add_node("supervisor", supervisor_node)
     graph.add_node("rag", rag_node)
@@ -194,9 +359,21 @@ RAG 근거:
     graph.add_node("synthesis", synthesis_node)
 
     graph.set_entry_point("supervisor")
-    graph.add_edge("supervisor", "rag")
-    graph.add_edge("rag", "resume")
-    graph.add_edge("resume", "interview")
+    graph.add_conditional_edges(
+        "supervisor",
+        route_after_supervisor,
+        {"rag": "rag", "synthesis": "synthesis"},
+    )
+    graph.add_conditional_edges(
+        "rag",
+        route_after_rag,
+        {"resume": "resume", "interview": "interview", "synthesis": "synthesis"},
+    )
+    graph.add_conditional_edges(
+        "resume",
+        route_after_resume,
+        {"interview": "interview", "synthesis": "synthesis"},
+    )
     graph.add_edge("interview", "synthesis")
     graph.add_edge("synthesis", END)
     return graph.compile()
@@ -206,7 +383,8 @@ class JobPilotService:
     """High-level service that owns retriever, workflow and memory."""
 
     def __init__(self) -> None:
-        self.memory = SessionMemory()
+        settings = load_settings()
+        self.memory = SessionMemory(storage_path=settings.index_dir / "session_memory.json")
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)
 

@@ -2,18 +2,43 @@
 
 from __future__ import annotations
 
+import json
 from io import BytesIO
+from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
 
+from src.config import load_settings
 from src.workflow import ChatRequest, JobPilotService
 
 
 @st.cache_resource
 def get_service() -> JobPilotService:
     return JobPilotService()
+
+
+def _history_file_path() -> Path:
+    settings = load_settings()
+    return settings.index_dir / "ui_input_history.json"
+
+
+def _load_persisted_history() -> list[dict]:
+    path = _history_file_path()
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+    return raw if isinstance(raw, list) else []
+
+
+def _save_persisted_history(history: list[dict]) -> None:
+    path = _history_file_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _extract_uploaded_text(uploaded_file) -> str:
@@ -71,7 +96,7 @@ def run() -> None:
     if "session_id" not in st.session_state:
         st.session_state.session_id = f"session-{uuid4().hex[:8]}"
     if "input_history" not in st.session_state:
-        st.session_state.input_history = []
+        st.session_state.input_history = _load_persisted_history()
     if "resume_text_input" not in st.session_state:
         st.session_state.resume_text_input = ""
     if "query_input" not in st.session_state:
@@ -115,9 +140,11 @@ def run() -> None:
                         st.rerun()
                     if col_b.button("삭제", key=f"delete_{real_idx}", use_container_width=True):
                         del st.session_state.input_history[real_idx]
+                        _save_persisted_history(st.session_state.input_history)
                         st.rerun()
                 if st.button("기록 전체 삭제", type="secondary", use_container_width=True):
                     st.session_state.input_history = []
+                    _save_persisted_history(st.session_state.input_history)
                     st.rerun()
 
         st.selectbox(
@@ -180,6 +207,7 @@ def run() -> None:
                 "response": response.model_dump(),
             }
         )
+        _save_persisted_history(st.session_state.input_history)
         st.session_state.last_response = response.model_dump()
         # Rerun to refresh sidebar history immediately after append.
         st.rerun()

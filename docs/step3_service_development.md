@@ -21,6 +21,14 @@
 - `src/ui/streamlit_app.py`: Streamlit UI
 - `main.py`: CLI 실행 엔트리
 
+## 2-1) 구조도/플로우 산출물
+
+- 아키텍처 다이어그램: `docs/images/system_architecture.png`
+- 서비스 플로우 다이어그램: `docs/images/service_flow_sequence.png`
+- 포함 내용:
+  - LangGraph 주요 노드/엣지(`supervisor -> rag -> resume/interview -> synthesis`)
+  - RAG 컨텍스트/참고 출처(`rag_context`, `rag_refs`)가 Supervisor/Synthesis에 주입되는 데이터 흐름
+
 ## 3) 실행 방법
 
 ### 의존성 설치
@@ -79,3 +87,7 @@ python scripts/run_streamlit.py
 - FastAPI `/chat` 예외 처리 강화: `ValueError -> 400`, 기타 예외 -> `500`
 - 실행/운영 문서 업데이트: README Troubleshooting 섹션 추가
 - Streamlit UI 업데이트: 세션 ID 자동 관리, 새 대화 시작, 실행 입력 기록의 다시 불러오기(질문/직무/이력서/결과 복원)
+- Supervisor 라우팅 고도화: `resume_only/interview_only/full/plan_only` 분류 + LangGraph 조건부 엣지 분기 적용
+- Tool loop 고도화: 단일 호출이 아닌 최대 N회(기본 4회) 도구 재호출 루프 및 종료 토큰(`DONE`) 처리
+- 세션 메모리 영속화: 메모리 JSON 파일 저장/로드로 서버 재시작 후 대화 이력 유지
+- RAG Agent 강화: 쿼리 리라이트, 직무 힌트 기반 문서 우선순위(스코어 부스팅), route 메타 노트 반영
