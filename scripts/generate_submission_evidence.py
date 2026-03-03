@@ -57,7 +57,10 @@ def main() -> None:
         "target_role": args.target_role,
         "resume_text": args.resume_text,
     }
-    result = service.graph.invoke(state)
+    result = service.graph.invoke(
+        state,
+        config={"configurable": {"thread_id": args.session_id}},
+    )
     final_answer = result.get("final_answer", {})
 
     json_path = output_dir / "agent_final_answer.json"

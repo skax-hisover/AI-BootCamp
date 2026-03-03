@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import json
 import time
+from contextlib import contextmanager
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import DefaultDict
+from threading import RLock
+
+from filelock import FileLock
 
 
 @dataclass
@@ -19,6 +23,7 @@ class SessionMemory:
         default_factory=lambda: defaultdict(list)
     )
     _updated_at: dict[str, float] = field(default_factory=dict)
+    _mutex: RLock = field(default_factory=RLock)
 
     def __post_init__(self) -> None:
         if not self.storage_path:
@@ -28,23 +33,54 @@ class SessionMemory:
         if not path.exists():
             return
 
+        with self._with_file_lock():
+            self._load_from_disk()
+
+        self._prune(now=time.time(), flush=False)
+
+    @property
+    def _lock_path(self) -> Path | None:
+        if not self.storage_path:
+            return None
+        path = Path(self.storage_path)
+        return path.with_suffix(path.suffix + ".lock")
+
+    @contextmanager
+    def _with_file_lock(self):
+        lock_path = self._lock_path
+        if lock_path is None:
+            yield
+            return
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock = FileLock(str(lock_path), timeout=5)
+        with lock:
+            yield
+
+    def _load_from_disk(self) -> None:
+        if not self.storage_path:
+            return
+        path = Path(self.storage_path)
+        if not path.exists():
+            return
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return
 
+        loaded_messages: DefaultDict[str, list[dict[str, str]]] = defaultdict(list)
+        loaded_updated_at: dict[str, float] = {}
         if isinstance(raw, dict) and "sessions" in raw:
             sessions = raw.get("sessions", {})
             updated_at = raw.get("updated_at", {})
             if isinstance(sessions, dict):
                 for session_id, messages in sessions.items():
                     if isinstance(session_id, str) and isinstance(messages, list):
-                        self._messages[session_id] = self._normalize_messages(messages)
+                        loaded_messages[session_id] = self._normalize_messages(messages)
             if isinstance(updated_at, dict):
                 for session_id, ts in updated_at.items():
                     if isinstance(session_id, str):
                         try:
-                            self._updated_at[session_id] = float(ts)
+                            loaded_updated_at[session_id] = float(ts)
                         except (TypeError, ValueError):
                             continue
         elif isinstance(raw, dict):
@@ -52,10 +88,11 @@ class SessionMemory:
             now = time.time()
             for session_id, messages in raw.items():
                 if isinstance(session_id, str) and isinstance(messages, list):
-                    self._messages[session_id] = self._normalize_messages(messages)
-                    self._updated_at[session_id] = now
+                    loaded_messages[session_id] = self._normalize_messages(messages)
+                    loaded_updated_at[session_id] = now
 
-        self._prune(now=time.time(), flush=False)
+        self._messages = loaded_messages
+        self._updated_at = loaded_updated_at
 
     def _normalize_messages(self, messages: list[dict[str, str]]) -> list[dict[str, str]]:
         normalized: list[dict[str, str]] = []
@@ -103,6 +140,12 @@ class SessionMemory:
         if not self.storage_path:
             return
 
+        with self._with_file_lock():
+            self._flush_unlocked()
+
+    def _flush_unlocked(self) -> None:
+        if not self.storage_path:
+            return
         path = Path(self.storage_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -114,16 +157,36 @@ class SessionMemory:
 
     def add(self, session_id: str, role: str, content: str) -> None:
         now = time.time()
-        self._prune(now=now, flush=False)
-        self._messages[session_id].append({"role": role, "content": content})
-        self._updated_at[session_id] = now
-        self._enforce_max_sessions()
-        self._flush()
+        with self._mutex:
+            if self.storage_path:
+                with self._with_file_lock():
+                    self._load_from_disk()
+                    self._prune(now=now, flush=False)
+                    self._messages[session_id].append({"role": role, "content": content})
+                    self._updated_at[session_id] = now
+                    self._enforce_max_sessions()
+                    self._flush_unlocked()
+                    return
+            self._prune(now=now, flush=False)
+            self._messages[session_id].append({"role": role, "content": content})
+            self._updated_at[session_id] = now
+            self._enforce_max_sessions()
+            self._flush()
 
     def get(self, session_id: str, limit: int = 8) -> list[dict[str, str]]:
-        self._prune()
-        messages = self._messages.get(session_id, [])
-        if session_id in self._messages:
-            self._updated_at[session_id] = time.time()
-            self._flush()
-        return messages[-limit:]
+        with self._mutex:
+            if self.storage_path:
+                with self._with_file_lock():
+                    self._load_from_disk()
+                    self._prune(flush=False)
+                    messages = self._messages.get(session_id, [])
+                    if session_id in self._messages:
+                        self._updated_at[session_id] = time.time()
+                        self._flush_unlocked()
+                    return messages[-limit:]
+            self._prune()
+            messages = self._messages.get(session_id, [])
+            if session_id in self._messages:
+                self._updated_at[session_id] = time.time()
+                self._flush()
+            return messages[-limit:]

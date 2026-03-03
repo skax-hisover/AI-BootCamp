@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar
 
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
@@ -13,7 +14,7 @@ from typing_extensions import TypedDict
 from src.agents.schemas import FinalAnswer, InterviewNotes, ResumeNotes
 from src.agents.tools import interview_question_bank, resume_keyword_match_score
 from src.config import get_chat_model, load_settings
-from src.retrieval import HybridRetriever
+from src.retrieval import HybridRetriever, SearchHit
 from src.utils.memory import SessionMemory
 from src.workflow.contracts import ChatRequest, ChatResponse
 
@@ -47,12 +48,15 @@ class RagPlan(BaseModel):
     )
 
 
-def _normalize_content(content: Any) -> str:
-    text = content if isinstance(content, str) else str(content)
-    return text.replace("DONE", "").strip()
+TStructured = TypeVar("TStructured", bound=BaseModel)
 
 
-def _run_tool_loop(prompt: str, tools: list[BaseTool], max_steps: int = 4) -> str:
+def _run_tool_loop_structured(
+    prompt: str,
+    tools: list[BaseTool],
+    output_schema: type[TStructured],
+    max_steps: int = 4,
+) -> TStructured:
     llm = get_chat_model(temperature=0.2).bind_tools(tools)
     messages = [HumanMessage(content=prompt)]
     for _ in range(max_steps):
@@ -60,7 +64,7 @@ def _run_tool_loop(prompt: str, tools: list[BaseTool], max_steps: int = 4) -> st
         messages.append(response)
 
         if not response.tool_calls:
-            return _normalize_content(response.content)
+            break
 
         for call in response.tool_calls:
             matched_tool = next((tool for tool in tools if tool.name == call["name"]), None)
@@ -83,18 +87,19 @@ def _run_tool_loop(prompt: str, tools: list[BaseTool], max_steps: int = 4) -> st
                 )
             )
 
-    final = get_chat_model(temperature=0.2).invoke(
+    parser = get_chat_model(temperature=0.2).with_structured_output(output_schema)
+    return parser.invoke(
         [
             *messages,
             HumanMessage(
                 content=(
-                    "도구 결과를 종합해 최종 답변만 간결히 작성하고 마지막에 DONE을 붙이세요. "
-                    "반드시 한국어로만 작성하세요."
+                    "위 대화와 도구 결과를 종합하여 최종 결과를 작성하세요. "
+                    "더 이상 도구를 호출하지 말고, 생각 과정을 노출하지 말고 결과만 작성하세요. "
+                    "반드시 한국어로 작성하세요."
                 )
             ),
-        ]
+        ],
     )
-    return _normalize_content(final.content)
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
@@ -163,11 +168,81 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
             lines.append(f"- 근거: {item}")
         return "\n".join(lines) if lines else str(notes)
 
+    def _fallback_resume_notes(state: AgentState, reason: str) -> dict[str, Any]:
+        return {
+            "key_findings": [
+                "구조화 파싱 실패로 최소 진단 결과로 대체되었습니다.",
+                reason,
+            ],
+            "improvement_points": [
+                "핵심 역량 3~5개를 상단 요약에 명시",
+                "프로젝트를 문제-접근-결과 구조로 재작성",
+                "정량 지표(성능/처리량/품질)를 문장에 포함",
+                "목표 직무 공고 키워드와 일치율을 높이도록 수정",
+            ],
+            "evidence_snippets": [state.get("rag_context", "")[:300] or "RAG 근거 없음"],
+        }
+
+    def _fallback_interview_notes(state: AgentState, reason: str) -> dict[str, Any]:
+        return {
+            "expected_questions": [
+                "해당 직무에서 본인이 가장 잘한 문제 해결 사례는?",
+                "프로젝트에서 성과를 수치로 설명할 수 있는가?",
+                "협업 갈등 상황을 어떻게 해결했는가?",
+                "우선순위 판단 기준은 무엇이었는가?",
+            ],
+            "answer_guides": [
+                "상황-행동-결과 순서로 간결하게 답변",
+                "수치/지표를 포함해 신뢰도를 높임",
+                "본인 기여 범위를 명확히 구분",
+                "회고와 재발 방지 관점까지 포함",
+            ],
+            "avoid_patterns": [
+                "근거 없는 단정형 답변",
+                "팀 성과를 본인 성과처럼 과장",
+                "기술 나열만 하고 문제 맥락 누락",
+                "질문 의도와 무관한 장황한 설명",
+            ],
+            "evidence_snippets": [
+                reason,
+                state.get("rag_context", "")[:300] or "RAG 근거 없음",
+            ],
+        }
+
+    def _fallback_final_answer(state: AgentState, reason: str) -> dict[str, Any]:
+        refs = state.get("rag_refs") or []
+        references = refs[:4] if isinstance(refs, list) else []
+        if not references:
+            references = ["RAG 근거 부족: 일반 가이드 기반 결과"]
+        return {
+            "summary": f"일부 구조화 단계 실패로 안전 모드 응답을 제공합니다. ({reason})",
+            "resume_improvements": [
+                "직무 키워드를 반영해 이력서 요약을 재작성",
+                "프로젝트 성과를 수치 중심으로 보강",
+                "기술 스택보다 문제 해결 흐름을 강조",
+                "JD와 불일치하는 표현을 정리",
+            ],
+            "interview_preparation": [
+                "직무 핵심 질문 10개를 선정해 답변 초안 작성",
+                "STAR 구조로 답변 리허설 진행",
+                "수치/지표 근거를 포함한 답변으로 보완",
+                "모의 면접 후 취약 질문 재학습",
+            ],
+            "two_week_plan": [
+                "1주차: 이력서 핵심 수정 및 공고 키워드 정렬",
+                "1주차: 프로젝트 사례 2개를 성과 중심으로 재정리",
+                "2주차: 면접 질문별 답변 스크립트 완성",
+                "2주차: 모의 면접 및 피드백 반영",
+            ],
+            "references": references,
+        }
+
     def _route_by_supervisor(state: AgentState) -> AgentState:
         router = llm.with_structured_output(RouteDecision)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
         ) or "없음"
+        resume_text = (state.get("resume_text") or "").strip()
         try:
             decision = router.invoke(
                 f"""
@@ -185,11 +260,29 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 [목표 직무]
 {state['target_role']}
 
+[이력서 텍스트 제공 여부]
+{"제공됨" if resume_text else "미제공"}
+
+[이력서 텍스트 길이]
+{len(resume_text)}
+
 [최근 메모리]
 {history_text}
+
+[라우팅 규칙]
+- 이력서 텍스트가 미제공이면 resume_only는 가능한 한 피하라.
+- 이력서 텍스트가 미제공이고 요청이 이력서 중심이면 plan_only 또는 full 중 더 안전한 쪽을 선택하라.
+- 면접 대비 요청이 명확하면 interview_only를 우선 검토하라.
 """
             )
-            return {"route": decision.route, "routing_reason": decision.reason}
+            route = decision.route
+            reason = decision.reason
+            if not resume_text and route == "resume_only":
+                route = "plan_only"
+                reason = (
+                    f"{reason} / 이력서 텍스트가 없어 resume_only 대신 plan_only로 조정"
+                )
+            return {"route": route, "routing_reason": reason}
         except Exception:
             return {"route": "full", "routing_reason": "파싱 실패로 full 라우트 기본 적용"}
 
@@ -215,14 +308,61 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         lowered = text.lower()
         return any(keyword in lowered for keyword in keywords) if keywords else True
 
+    def _category_filter_for_route(route: str) -> set[str] | None:
+        route_key = (route or "full").lower()
+        if route_key == "resume_only":
+            return {"job_postings", "jd", "portfolio_examples", "resume_examples"}
+        if route_key == "interview_only":
+            return {"interview_guides", "job_postings", "jd"}
+        if route_key == "plan_only":
+            return {"job_postings", "jd", "interview_guides"}
+        return None
+
+    def _rerank_hits(
+        hits: list[SearchHit],
+        query: str,
+        role_hint: str,
+        route: str,
+        top_k: int = 4,
+    ) -> list[SearchHit]:
+        """
+        Dedicated rerank layer.
+        This function is an extension point for future rerankers
+        (e.g., cross-encoder / LLM-based rerank) without touching retriever.search().
+        """
+        if not hits:
+            return []
+        query_lower = query.lower()
+        route_categories = _category_filter_for_route(route)
+        rescored: list[SearchHit] = []
+        for hit in hits:
+            category = str(hit.metadata.get("category", "")).lower()
+            role_boost = (
+                0.15 if _is_role_relevant(f"{hit.source} {hit.content}", role_hint) else 0.0
+            )
+            category_boost = 0.08 if route_categories and category in route_categories else 0.0
+            lexical_boost = 0.05 if any(token in hit.content.lower() for token in query_lower.split()) else 0.0
+            rescored.append(
+                SearchHit(
+                    content=hit.content,
+                    source=hit.source,
+                    score=round(hit.score + role_boost + category_boost + lexical_boost, 4),
+                    metadata=hit.metadata,
+                )
+            )
+        rescored.sort(key=lambda item: item.score, reverse=True)
+        return rescored[:top_k]
+
     def rag_node(state: AgentState) -> AgentState:
         planner = llm.with_structured_output(RagPlan)
         role_hint = _infer_role_hint(state["target_role"])
+        route = state.get("route", "full")
+        category_filter = _category_filter_for_route(route)
         try:
             rag_plan = planner.invoke(
                 f"""
 너는 RAG Agent다. 검색 품질을 높이기 위해 쿼리를 2~3개로 재작성하라.
-route={state.get('route', 'full')}
+route={route}
 user_query={state['user_query']}
 target_role={state['target_role']}
 source_hint는 직무 연관 키워드로 짧게 작성하라.
@@ -234,37 +374,50 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             query_candidates = [state["user_query"], f"{state['target_role']} {state['user_query']}"]
             source_hint = role_hint
 
-        merged_hits: dict[str, dict[str, Any]] = {}
+        merged_hits: dict[str, SearchHit] = {}
         for candidate in query_candidates[:3]:
-            for hit in retriever.search(candidate, top_k=4):
+            for hit in retriever.search(candidate, top_k=4, category_filter=category_filter):
                 key = f"{hit.source}::{hit.content[:120]}"
-                boosted = hit.score + (
-                    0.15 if _is_role_relevant(f"{hit.source} {hit.content}", source_hint) else 0.0
-                )
                 current = merged_hits.get(key)
-                if not current or boosted > current["score"]:
-                    merged_hits[key] = {
-                        "content": hit.content,
-                        "source": hit.source,
-                        "score": round(boosted, 4),
-                    }
+                if not current or hit.score > current.score:
+                    merged_hits[key] = hit
 
-        ranked_hits = sorted(merged_hits.values(), key=lambda item: item["score"], reverse=True)[:4]
+        ranked_hits = _rerank_hits(
+            hits=list(merged_hits.values()),
+            query=state["user_query"],
+            role_hint=source_hint,
+            route=route,
+            top_k=4,
+        )
         context_parts: list[str] = []
         refs: list[dict[str, Any]] = []
         for i, hit in enumerate(ranked_hits, start=1):
-            context_parts.append(f"[{i}] ({hit['source']}, score={hit['score']})\n{hit['content']}")
-            refs.append({"rank": i, "source": hit["source"], "score": hit["score"]})
+            context_parts.append(f"[{i}] ({hit.source}, score={hit.score})\n{hit.content}")
+            refs.append(
+                {
+                    "rank": i,
+                    "source": hit.source,
+                    "score": hit.score,
+                    "category": hit.metadata.get("category"),
+                }
+            )
 
         if not context_parts:
             context_parts = ["검색 결과가 부족하여 일반적인 직무 가이드를 기반으로 응답합니다."]
 
-        ref_names = [f"{r['rank']}. {r['source']} (score={r['score']})" for r in refs]
+        ref_names = [
+            f"{r['rank']}. {r['source']} (score={r['score']}, category={r.get('category')})"
+            for r in refs
+        ]
         rag_context = "\n\n".join(context_parts)
-        rag_context += f"\n\n[rag-agent-note] route={state.get('route', 'full')}, source_hint={source_hint}"
+        rag_context += (
+            f"\n\n[rag-agent-note] route={route}, source_hint={source_hint}, "
+            f"category_filter={sorted(category_filter) if category_filter else 'none'}"
+        )
         return {"rag_context": rag_context, "rag_refs": ref_names}
 
     def resume_node(state: AgentState) -> AgentState:
+        has_resume_text = bool((state.get("resume_text") or "").strip())
         prompt = f"""
 당신은 Resume Agent입니다.
 중요: 답변은 반드시 한국어로만 작성하세요.
@@ -279,33 +432,48 @@ RAG 근거:
 
 지시:
 1) resume_keyword_match_score 도구를 활용해 키워드 적합도를 반영하세요.
-2) 불필요한 설명 없이, 핵심 결론만 작성하세요.
+2) 도구 호출이 필요 없다고 판단되면 즉시 최종 결과를 작성하세요.
 3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
 4) 근거 문장/출처 기반으로만 작성하고, 근거 없는 단정은 금지합니다.
+5) 최종 출력은 반드시 ResumeNotes 스키마를 따르세요.
+6) 로컬 정책: 이력서 텍스트가 없으면 개인 문장 교정보다 "직무-이력서 갭 분석 및 보강 체크리스트" 중심으로 작성하세요.
 
 [Few-shot]
 {resume_few_shot}
-
-충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
-        result = _run_tool_loop(prompt, [resume_keyword_match_score])
-        parser = llm.with_structured_output(ResumeNotes)
-        structured = parser.invoke(
-            f"""
-아래 Resume Agent 결과를 JSON 스키마로 변환하세요.
-생각 과정은 출력하지 말고 결과만 작성하세요.
-모든 항목은 한국어로 작성하세요.
+        try:
+            if not has_resume_text:
+                parser = llm.with_structured_output(ResumeNotes)
+                structured = parser.invoke(
+                    f"""
+이력서 원문이 없는 상황입니다.
+아래 조건을 반영해 ResumeNotes를 작성하세요.
+- 개인 경력 단정 금지
+- 직무 공고 기준 갭 분석/보강 우선순위 제시
+- 한국어로만 작성
 
-[원문]
-{result}
+[목표 직무]
+{state['target_role']}
+
+[사용자 요청]
+{state['user_query']}
 
 [RAG 근거]
 {state.get('rag_context', '')}
 """
-        )
-        return {"resume_notes": structured.model_dump()}
+                )
+            else:
+                structured = _run_tool_loop_structured(
+                    prompt=prompt,
+                    tools=[resume_keyword_match_score],
+                    output_schema=ResumeNotes,
+                )
+            return {"resume_notes": structured.model_dump()}
+        except Exception as exc:
+            return {"resume_notes": _fallback_resume_notes(state, f"resume_node fallback: {exc}")}
 
     def interview_node(state: AgentState) -> AgentState:
+        has_resume_text = bool((state.get("resume_text") or "").strip())
         prompt = f"""
 당신은 Interview Agent입니다.
 중요: 답변은 반드시 한국어로만 작성하세요.
@@ -318,31 +486,49 @@ RAG 근거:
 
 지시:
 1) interview_question_bank 도구를 활용해 질문 세트를 참고하세요.
-2) 예상 질문 + 답변 방향 + 피해야 할 답변 패턴을 핵심만 제시하세요.
+2) 도구 호출이 필요 없다고 판단되면 즉시 최종 결과를 작성하세요.
 3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
 4) 근거 문장/출처 기반으로만 작성하고, 근거 없는 단정은 금지합니다.
+5) 최종 출력은 반드시 InterviewNotes 스키마를 따르세요.
+6) 로컬 정책: 이력서 텍스트가 없으면 개인 경험 단정 대신 직무 공통 질문/답변 프레임워크 중심으로 작성하세요.
 
 [Few-shot]
 {interview_few_shot}
-
-충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
-        result = _run_tool_loop(prompt, [interview_question_bank])
-        parser = llm.with_structured_output(InterviewNotes)
-        structured = parser.invoke(
-            f"""
-아래 Interview Agent 결과를 JSON 스키마로 변환하세요.
-생각 과정은 출력하지 말고 결과만 작성하세요.
-모든 항목은 한국어로 작성하세요.
+        try:
+            if not has_resume_text:
+                parser = llm.with_structured_output(InterviewNotes)
+                structured = parser.invoke(
+                    f"""
+이력서 원문이 없는 상황입니다.
+아래 조건을 반영해 InterviewNotes를 작성하세요.
+- 개인 이력 단정 금지
+- 직무 공통 질문, 답변 프레임워크, 금지 패턴을 우선 제시
+- 한국어로만 작성
 
-[원문]
-{result}
+[목표 직무]
+{state['target_role']}
+
+[사용자 요청]
+{state['user_query']}
 
 [RAG 근거]
 {state.get('rag_context', '')}
 """
-        )
-        return {"interview_notes": structured.model_dump()}
+                )
+            else:
+                structured = _run_tool_loop_structured(
+                    prompt=prompt,
+                    tools=[interview_question_bank],
+                    output_schema=InterviewNotes,
+                )
+            return {"interview_notes": structured.model_dump()}
+        except Exception as exc:
+            return {
+                "interview_notes": _fallback_interview_notes(
+                    state, f"interview_node fallback: {exc}"
+                )
+            }
 
     def synthesis_node(state: AgentState) -> AgentState:
         parser_llm = llm.with_structured_output(FinalAnswer)
@@ -359,8 +545,9 @@ RAG 근거:
             if state.get("interview_notes")
             else "이번 라우트에서는 Interview Agent를 생략했습니다."
         )
-        answer = parser_llm.invoke(
-            f"""
+        try:
+            answer = parser_llm.invoke(
+                f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
 모든 필드(summary, resume_improvements, interview_preparation, two_week_plan, references)는 반드시 한국어로 작성하세요.
@@ -396,8 +583,10 @@ RAG 근거:
 - resume_improvements, interview_preparation, two_week_plan은 각각 최소 4개.
 - references는 출처 파일명 중심으로 구성.
 """
-        )
-        return {"final_answer": answer.model_dump()}
+            )
+            return {"final_answer": answer.model_dump()}
+        except Exception as exc:
+            return {"final_answer": _fallback_final_answer(state, f"synthesis fallback: {exc}")}
 
     def route_after_supervisor(state: AgentState) -> str:
         route = state.get("route", "full")
@@ -443,7 +632,8 @@ RAG 근거:
     )
     graph.add_edge("interview", "synthesis")
     graph.add_edge("synthesis", END)
-    return graph.compile()
+    checkpointer = MemorySaver()
+    return graph.compile(checkpointer=checkpointer)
 
 
 class JobPilotService:
@@ -468,7 +658,10 @@ class JobPilotService:
             "target_role": req.target_role,
             "resume_text": req.resume_text,
         }
-        result = self.graph.invoke(state)
+        result = self.graph.invoke(
+            state,
+            config={"configurable": {"thread_id": req.session_id}},
+        )
         payload = result["final_answer"]
         response = ChatResponse(session_id=req.session_id, **payload)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import hashlib
 from pathlib import Path
 from dataclasses import dataclass
 from functools import lru_cache
@@ -113,12 +114,30 @@ def _get_okt():
     return Okt()
 
 
+def _file_content_fingerprint(path: Path, sample_size: int = 65536) -> str:
+    stat = path.stat()
+    hasher = hashlib.sha256()
+    hasher.update(f"{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8"))
+    try:
+        with path.open("rb") as file:
+            if stat.st_size <= sample_size * 2:
+                hasher.update(file.read())
+            else:
+                hasher.update(file.read(sample_size))
+                file.seek(max(stat.st_size - sample_size, 0))
+                hasher.update(file.read(sample_size))
+    except OSError:
+        # Fallback to stat-only fingerprint if file read fails.
+        pass
+    return hasher.hexdigest()
+
+
 def _corpus_signature(paths: list[Path], root: Path) -> str:
     records = []
     for path in sorted(paths):
         rel = path.relative_to(root).as_posix()
-        stat = path.stat()
-        records.append(f"{rel}|{int(stat.st_mtime)}|{stat.st_size}")
+        fingerprint = _file_content_fingerprint(path)
+        records.append(f"{rel}|{fingerprint}")
     return "|".join(records)
 
 
@@ -150,7 +169,12 @@ class HybridRetriever:
 
         chunks: list[Document] | None = None
         vector_db: FAISS | None = None
-        if faiss_dir.exists() and chunks_path.exists() and meta_path.exists():
+        if (
+            not settings.index_force_rebuild
+            and faiss_dir.exists()
+            and chunks_path.exists()
+            and meta_path.exists()
+        ):
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if isinstance(meta, dict) and meta.get("signature") == signature:

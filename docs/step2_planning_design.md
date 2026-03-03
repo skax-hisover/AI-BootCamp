@@ -75,7 +75,7 @@
   - `RAG Agent`: 지식 검색 및 근거 제공
 
 - **Tool Calling, ReAct, Memory 활용 여부**  
-  Tool Calling(필수), ReAct(의사결정), 세션 메모리(사용자 목표/이전 피드백 유지) 적용
+  Tool Calling(필수), ReAct 스타일 도구 루프(max step 기반 종료), 세션 메모리 + LangGraph Checkpointer(그래프 실행 상태) 적용
 
 ### **2.3 RAG 구성**
 
@@ -102,13 +102,13 @@
 ### **2.4 서비스 개발 및 패키징 계획**
 
 - **UI 개발 방식(Streamlit, React 등)**  
-  Streamlit 기반 대화형 UI(질문/직무 입력, 이력서 파일 업로드, 결과 카드, 실행 입력 기록 조회/삭제, 다시 불러오기)
+  Streamlit 기반 대화형 UI(질문/직무 입력, 이력서 파일 업로드, 결과 카드, 실행 입력 기록 조회/삭제, 다시 불러오기, 입력란 내부 실시간 카운터(`max_chars`) 기반 대용량 입력 방어)
 
 - **BE(API) 및 배포 전략(FastAPI, Docker 등)**  
   FastAPI로 Agent 실행 API 분리, 예외 처리(400/500)로 사용자 친화적 오류 응답 제공, 로컬 Docker 옵션 제공(선택)
 
 - **설정/환경 관리 계획**  
-  `final-project/.env` 사용, `src/config/settings.py`에서 로드, `requirements-final.txt`로 의존성 고정
+  `final-project/.env` 사용, `src/config/settings.py`에서 로드, `requirements-final.txt`로 의존성 고정, 필요 시 `INDEX_FORCE_REBUILD=true`로 인덱스 강제 재생성
 
 ### **2.5 선택적 확장 기능**
 
@@ -120,6 +120,9 @@
 
 - **A2A 기반 Agent 협업 구조**  
   향후 외부 에이전트(면접 시뮬레이터)와 협업 가능한 인터페이스 설계
+
+- **안정성/복원성 확장(운영 관점)**  
+  Structured Output 실패 시 노드별 fallback(최소 필드 degrade) 적용, 체크포인터 기반 세션 복원으로 재실행 비용 최소화
 
 **3. 주요 기능 및 동작 시나리오**
 

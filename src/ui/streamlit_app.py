@@ -13,6 +13,9 @@ import streamlit as st
 from src.config import load_settings
 from src.workflow import ChatRequest, JobPilotService
 
+MAX_QUERY_CHARS = 1500
+DEFAULT_MAX_RESUME_CHARS = 30000
+
 
 @st.cache_resource
 def get_service() -> JobPilotService:
@@ -88,6 +91,17 @@ def _extract_uploaded_text(uploaded_file) -> str:
     return ""
 
 
+def _compress_long_text(text: str, target_chars: int) -> tuple[str, bool]:
+    if len(text) <= target_chars:
+        return text, False
+    if target_chars < 200:
+        return text[:target_chars], True
+    head = int(target_chars * 0.7)
+    tail = max(target_chars - head, 0)
+    compressed = f"{text[:head]}\n\n... [중간 내용 생략] ...\n\n{text[-tail:]}"
+    return compressed, True
+
+
 def run() -> None:
     st.set_page_config(page_title="JobPilot AI", page_icon=":briefcase:", layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
@@ -105,6 +119,12 @@ def run() -> None:
         st.session_state.target_role_input = "백엔드 개발자"
     if "last_response" not in st.session_state:
         st.session_state.last_response = None
+    if "max_resume_chars" not in st.session_state:
+        st.session_state.max_resume_chars = DEFAULT_MAX_RESUME_CHARS
+    if "auto_compress_resume" not in st.session_state:
+        st.session_state.auto_compress_resume = False
+    if "resume_target_chars" not in st.session_state:
+        st.session_state.resume_target_chars = 18000
 
     with st.sidebar:
         st.subheader("입력 설정")
@@ -152,11 +172,43 @@ def run() -> None:
             ["백엔드 개발자", "데이터 분석가", "PM"],
             key="target_role_input",
         )
+        with st.expander("대용량 입력 방어 설정", expanded=False):
+            st.number_input(
+                "이력서 최대 글자 수(하드 제한)",
+                min_value=5000,
+                max_value=50000,
+                step=1000,
+                key="max_resume_chars",
+                help="이 값을 초과하면 실행 전에 차단됩니다.",
+            )
+            st.checkbox(
+                "긴 이력서 자동 압축(앞/뒤 핵심만 유지)",
+                key="auto_compress_resume",
+                help="업로드/입력된 텍스트가 길면 앞/뒤 중심으로 자동 압축합니다.",
+            )
+            st.number_input(
+                "자동 압축 목표 글자 수",
+                min_value=2000,
+                max_value=30000,
+                step=500,
+                key="resume_target_chars",
+                disabled=not st.session_state.auto_compress_resume,
+            )
+
+    if len(st.session_state.query_input or "") > MAX_QUERY_CHARS:
+        st.session_state.query_input = (st.session_state.query_input or "")[:MAX_QUERY_CHARS]
+        st.warning(f"질문/요청은 최대 {MAX_QUERY_CHARS:,}자까지 입력할 수 있어 자동으로 잘렸습니다.")
 
     st.text_area(
         "질문/요청",
         placeholder="예) 백엔드 이직을 위해 이력서 개선 포인트와 2주 계획을 만들어줘",
         key="query_input",
+        max_chars=MAX_QUERY_CHARS,
+        help=f"최대 {MAX_QUERY_CHARS:,}자까지 입력할 수 있습니다. 입력 중 글자 수가 실시간 표시됩니다.",
+    )
+    st.caption(
+        f"질문/요청은 최대 {MAX_QUERY_CHARS:,}자까지 입력 가능합니다. "
+        "입력창 내부 카운터가 실시간 기준입니다."
     )
     uploaded_resume = st.file_uploader(
         "이력서 파일 업로드(선택)",
@@ -168,23 +220,67 @@ def run() -> None:
     if uploaded_resume is not None:
         extracted_resume = _extract_uploaded_text(uploaded_resume)
         if extracted_resume:
+            if st.session_state.auto_compress_resume:
+                extracted_resume, compressed = _compress_long_text(
+                    extracted_resume, int(st.session_state.resume_target_chars)
+                )
+                if compressed:
+                    st.info("업로드 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
             st.success(f"파일 분석 완료: {uploaded_resume.name}")
             st.session_state.resume_text_input = extracted_resume
+
+    max_resume_chars = int(st.session_state.max_resume_chars)
+    if len(st.session_state.resume_text_input or "") > max_resume_chars:
+        st.session_state.resume_text_input = (st.session_state.resume_text_input or "")[
+            :max_resume_chars
+        ]
+        st.warning(
+            f"이력서 텍스트는 최대 {max_resume_chars:,}자까지 입력할 수 있어 자동으로 잘렸습니다."
+        )
 
     resume_text = st.text_area(
         "이력서 텍스트(선택)",
         height=220,
         placeholder="여기에 직접 붙여넣거나, 위에서 파일 업로드를 사용하세요.",
         key="resume_text_input",
+        max_chars=max_resume_chars,
+        help=f"최대 {max_resume_chars:,}자까지 입력할 수 있습니다. 입력 중 글자 수가 실시간 표시됩니다.",
     )
     resume_text = st.session_state.resume_text_input
+    st.caption(
+        f"이력서 텍스트는 최대 {max_resume_chars:,}자까지 입력 가능합니다. "
+        "입력창 내부 카운터가 실시간 기준입니다."
+    )
 
-    if st.button("에이전트 실행", type="primary", use_container_width=True):
+    if st.button(
+        "에이전트 실행",
+        type="primary",
+        use_container_width=True,
+    ):
         query = st.session_state.query_input
         target_role = st.session_state.target_role_input
+        resume_text_for_run = resume_text
         if not query.strip():
             st.warning("질문/요청을 입력해 주세요.")
             return
+        if len(query) > MAX_QUERY_CHARS:
+            st.warning(f"질문/요청은 최대 {MAX_QUERY_CHARS:,}자까지 입력할 수 있습니다.")
+            return
+        if len(resume_text_for_run) > max_resume_chars:
+            if st.session_state.auto_compress_resume:
+                resume_text_for_run, compressed = _compress_long_text(
+                    resume_text_for_run, int(st.session_state.resume_target_chars)
+                )
+                if compressed:
+                    st.session_state.resume_text_input = resume_text_for_run
+                    st.info("실행 전 긴 이력서 텍스트를 자동 압축했습니다.")
+            if len(resume_text_for_run) > max_resume_chars:
+                st.error(
+                    f"이력서 텍스트 길이({len(resume_text_for_run):,}자)가 제한"
+                    f"({max_resume_chars:,}자)을 초과했습니다."
+                )
+                st.info("텍스트를 줄이거나 '긴 이력서 자동 압축' 옵션을 켜고 다시 시도하세요.")
+                return
 
         try:
             with st.spinner("멀티 에이전트가 분석 중입니다..."):
@@ -194,7 +290,7 @@ def run() -> None:
                         session_id=st.session_state.session_id,
                         user_query=query,
                         target_role=target_role,
-                        resume_text=resume_text,
+                        resume_text=resume_text_for_run,
                     )
                 )
         except ValueError as exc:
@@ -235,8 +331,8 @@ def run() -> None:
                 "session_id": st.session_state.session_id,
                 "query": query.strip(),
                 "target_role": target_role,
-                "resume_text": resume_text,
-                "resume_len": len(resume_text),
+                "resume_text": resume_text_for_run,
+                "resume_len": len(resume_text_for_run),
                 "response": response.model_dump(),
             }
         )

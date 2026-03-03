@@ -20,6 +20,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
@@ -36,6 +43,7 @@ class Settings:
     chunk_overlap: int = 120
     memory_max_sessions: int = 200
     memory_ttl_seconds: int = 60 * 60 * 24
+    index_force_rebuild: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -59,6 +67,7 @@ def load_settings() -> Settings:
     api_version = os.getenv("AOAI_API_VERSION") or os.getenv("OPENAI_API_VERSION") or "2024-10-21"
     memory_max_sessions = _int_env("MEMORY_MAX_SESSIONS", 200)
     memory_ttl_seconds = _int_env("MEMORY_TTL_SECONDS", 60 * 60 * 24)
+    index_force_rebuild = _bool_env("INDEX_FORCE_REBUILD", False)
 
     missing = []
     if not endpoint:
@@ -87,4 +96,5 @@ def load_settings() -> Settings:
         aoai_api_version=api_version,
         memory_max_sessions=memory_max_sessions,
         memory_ttl_seconds=memory_ttl_seconds,
+        index_force_rebuild=index_force_rebuild,
     )
