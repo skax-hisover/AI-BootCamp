@@ -7,6 +7,7 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 - **Prompt Engineering**: role-based prompts for Supervisor/Resume/Interview agents
 - **Multi-Agent (LangGraph)**: Supervisor -> RAG -> Resume Agent -> Interview Agent -> Synthesis
 - **RAG**: document loading (`.txt/.md/.csv/.pdf/.docx/.xlsx`), chunking, FAISS vector retrieval + BM25 keyword retrieval
+- **RAG Quality**: index persistence (`data/index/faiss`), metadata-aware context (page/paragraph/sheet/row), reranking/diversity filtering
 - **Structured Output**: final response generated with Pydantic schema
 - **Service Packaging**: FastAPI backend and Streamlit UI
 - **Resilience**: API-level exception handling for user-friendly error responses
@@ -53,6 +54,8 @@ Copy-Item .env.example .env
 - `AOAI_DEPLOY_GPT4O`
 - `AOAI_DEPLOY_EMBED_ADA` (or `AOAI_EMBEDDING_DEPLOYMENT`)
 - `AOAI_API_VERSION`
+- `MEMORY_MAX_SESSIONS` (optional, default `200`)
+- `MEMORY_TTL_SECONDS` (optional, default `86400`)
 
 ## Run Options
 
@@ -81,6 +84,7 @@ python scripts/run_streamlit.py
 - Session ID is managed internally; use `새 대화 시작` button for a fresh session
 - Sidebar provides input history view/delete for previous agent runs
 - `다시 불러오기` restores query, target role, resume text, and previous agent result
+- RAG index is cached on disk; first run can be slower, later runs are faster due to index reuse
 
 ## Troubleshooting
 

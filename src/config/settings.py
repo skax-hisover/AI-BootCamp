@@ -10,6 +10,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
@@ -24,6 +34,8 @@ class Settings:
     top_k: int = 4
     chunk_size: int = 800
     chunk_overlap: int = 120
+    memory_max_sessions: int = 200
+    memory_ttl_seconds: int = 60 * 60 * 24
 
 
 @lru_cache(maxsize=1)
@@ -45,6 +57,8 @@ def load_settings() -> Settings:
         or "text-embedding-ada-002"
     )
     api_version = os.getenv("AOAI_API_VERSION") or os.getenv("OPENAI_API_VERSION") or "2024-10-21"
+    memory_max_sessions = _int_env("MEMORY_MAX_SESSIONS", 200)
+    memory_ttl_seconds = _int_env("MEMORY_TTL_SECONDS", 60 * 60 * 24)
 
     missing = []
     if not endpoint:
@@ -71,4 +85,6 @@ def load_settings() -> Settings:
         aoai_deployment=deployment,
         aoai_embedding_deployment=embedding_deployment,
         aoai_api_version=api_version,
+        memory_max_sessions=memory_max_sessions,
+        memory_ttl_seconds=memory_ttl_seconds,
     )

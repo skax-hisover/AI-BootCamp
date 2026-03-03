@@ -186,16 +186,49 @@ def run() -> None:
             st.warning("질문/요청을 입력해 주세요.")
             return
 
-        with st.spinner("멀티 에이전트가 분석 중입니다..."):
-            service = get_service()
-            response = service.run(
-                ChatRequest(
-                    session_id=st.session_state.session_id,
-                    user_query=query,
-                    target_role=target_role,
-                    resume_text=resume_text,
+        try:
+            with st.spinner("멀티 에이전트가 분석 중입니다..."):
+                service = get_service()
+                response = service.run(
+                    ChatRequest(
+                        session_id=st.session_state.session_id,
+                        user_query=query,
+                        target_role=target_role,
+                        resume_text=resume_text,
+                    )
                 )
-            )
+        except ValueError as exc:
+            message = str(exc)
+            lower = message.lower()
+            if "no knowledge documents found" in lower:
+                settings = load_settings()
+                st.error("지식 문서가 없어 RAG를 실행할 수 없습니다.")
+                st.info(
+                    "다음 경로에 예시 파일을 넣어주세요: "
+                    f"`{settings.knowledge_dir}` (.txt/.md/.csv/.pdf/.docx/.xlsx)"
+                )
+                with st.expander("해결 가이드", expanded=False):
+                    st.markdown(
+                        "- 1) `data/knowledge` 아래에 최소 1개 문서를 추가하세요.\n"
+                        "- 2) 예: `job_postings/sample_jd.md`, `interview_guides/backend_qna.txt`\n"
+                        "- 3) 다시 `에이전트 실행`을 누르세요."
+                    )
+                return
+
+            if "missing environment variables" in lower:
+                st.error("필수 환경변수가 누락되어 실행할 수 없습니다.")
+                st.info("`final-project/.env` 파일의 AOAI 관련 항목을 확인하세요.")
+                with st.expander("필수 환경변수 목록", expanded=False):
+                    st.code(
+                        "AOAI_ENDPOINT\nAOAI_API_KEY\nAOAI_DEPLOY_GPT4O\nAOAI_DEPLOY_EMBED_ADA\nAOAI_API_VERSION"
+                    )
+                return
+
+            st.error(f"실행 오류: {message}")
+            return
+        except Exception as exc:
+            st.error(f"서비스 실행 중 예기치 못한 오류가 발생했습니다: {exc}")
+            return
 
         st.session_state.input_history.append(
             {

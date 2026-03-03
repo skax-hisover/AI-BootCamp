@@ -10,7 +10,7 @@ from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
-from src.agents.schemas import FinalAnswer
+from src.agents.schemas import FinalAnswer, InterviewNotes, ResumeNotes
 from src.agents.tools import interview_question_bank, resume_keyword_match_score
 from src.config import get_chat_model, load_settings
 from src.retrieval import HybridRetriever
@@ -28,8 +28,8 @@ class AgentState(TypedDict, total=False):
     rag_refs: list[str]
     route: str
     routing_reason: str
-    resume_notes: str
-    interview_notes: str
+    resume_notes: dict[str, Any]
+    interview_notes: dict[str, Any]
     final_answer: dict[str, Any]
 
 
@@ -137,6 +137,32 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 - 피해야 할 패턴: 개인 의견만 강조하고 데이터/지표 근거 누락
 """.strip()
 
+    def _format_resume_notes(notes: dict[str, Any]) -> str:
+        if not notes:
+            return "없음"
+        lines: list[str] = []
+        for item in notes.get("key_findings", []):
+            lines.append(f"- 핵심 진단: {item}")
+        for item in notes.get("improvement_points", []):
+            lines.append(f"- 개선 포인트: {item}")
+        for item in notes.get("evidence_snippets", []):
+            lines.append(f"- 근거: {item}")
+        return "\n".join(lines) if lines else str(notes)
+
+    def _format_interview_notes(notes: dict[str, Any]) -> str:
+        if not notes:
+            return "없음"
+        lines: list[str] = []
+        for item in notes.get("expected_questions", []):
+            lines.append(f"- 예상 질문: {item}")
+        for item in notes.get("answer_guides", []):
+            lines.append(f"- 답변 방향: {item}")
+        for item in notes.get("avoid_patterns", []):
+            lines.append(f"- 피해야 할 패턴: {item}")
+        for item in notes.get("evidence_snippets", []):
+            lines.append(f"- 근거: {item}")
+        return "\n".join(lines) if lines else str(notes)
+
     def _route_by_supervisor(state: AgentState) -> AgentState:
         router = llm.with_structured_output(RouteDecision)
         history_text = "\n".join(
@@ -242,6 +268,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         prompt = f"""
 당신은 Resume Agent입니다.
 중요: 답변은 반드시 한국어로만 작성하세요.
+중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 사용자 이력서:
@@ -252,8 +279,9 @@ RAG 근거:
 
 지시:
 1) resume_keyword_match_score 도구를 활용해 키워드 적합도를 반영하세요.
-2) 불필요한 설명 없이, 개선 포인트 중심으로 6줄 이내로 작성하세요.
+2) 불필요한 설명 없이, 핵심 결론만 작성하세요.
 3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
+4) 근거 문장/출처 기반으로만 작성하고, 근거 없는 단정은 금지합니다.
 
 [Few-shot]
 {resume_few_shot}
@@ -261,12 +289,27 @@ RAG 근거:
 충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
         result = _run_tool_loop(prompt, [resume_keyword_match_score])
-        return {"resume_notes": result}
+        parser = llm.with_structured_output(ResumeNotes)
+        structured = parser.invoke(
+            f"""
+아래 Resume Agent 결과를 JSON 스키마로 변환하세요.
+생각 과정은 출력하지 말고 결과만 작성하세요.
+모든 항목은 한국어로 작성하세요.
+
+[원문]
+{result}
+
+[RAG 근거]
+{state.get('rag_context', '')}
+"""
+        )
+        return {"resume_notes": structured.model_dump()}
 
     def interview_node(state: AgentState) -> AgentState:
         prompt = f"""
 당신은 Interview Agent입니다.
 중요: 답변은 반드시 한국어로만 작성하세요.
+중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 
@@ -277,6 +320,7 @@ RAG 근거:
 1) interview_question_bank 도구를 활용해 질문 세트를 참고하세요.
 2) 예상 질문 + 답변 방향 + 피해야 할 답변 패턴을 핵심만 제시하세요.
 3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
+4) 근거 문장/출처 기반으로만 작성하고, 근거 없는 단정은 금지합니다.
 
 [Few-shot]
 {interview_few_shot}
@@ -284,20 +328,43 @@ RAG 근거:
 충분한 결론에 도달하면 마지막에 DONE을 붙이세요.
 """
         result = _run_tool_loop(prompt, [interview_question_bank])
-        return {"interview_notes": result}
+        parser = llm.with_structured_output(InterviewNotes)
+        structured = parser.invoke(
+            f"""
+아래 Interview Agent 결과를 JSON 스키마로 변환하세요.
+생각 과정은 출력하지 말고 결과만 작성하세요.
+모든 항목은 한국어로 작성하세요.
+
+[원문]
+{result}
+
+[RAG 근거]
+{state.get('rag_context', '')}
+"""
+        )
+        return {"interview_notes": structured.model_dump()}
 
     def synthesis_node(state: AgentState) -> AgentState:
         parser_llm = llm.with_structured_output(FinalAnswer)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
         )
-        resume_notes = state.get("resume_notes", "이번 라우트에서는 Resume Agent를 생략했습니다.")
-        interview_notes = state.get("interview_notes", "이번 라우트에서는 Interview Agent를 생략했습니다.")
+        resume_notes = (
+            _format_resume_notes(state.get("resume_notes", {}))
+            if state.get("resume_notes")
+            else "이번 라우트에서는 Resume Agent를 생략했습니다."
+        )
+        interview_notes = (
+            _format_interview_notes(state.get("interview_notes", {}))
+            if state.get("interview_notes")
+            else "이번 라우트에서는 Interview Agent를 생략했습니다."
+        )
         answer = parser_llm.invoke(
             f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
 모든 필드(summary, resume_improvements, interview_preparation, two_week_plan, references)는 반드시 한국어로 작성하세요.
+생각 과정을 노출하지 말고 결과만 작성하세요.
 
 [사용자 요청]
 {state['user_query']}
@@ -384,7 +451,11 @@ class JobPilotService:
 
     def __init__(self) -> None:
         settings = load_settings()
-        self.memory = SessionMemory(storage_path=settings.index_dir / "session_memory.json")
+        self.memory = SessionMemory(
+            storage_path=settings.index_dir / "session_memory.json",
+            max_sessions=settings.memory_max_sessions,
+            ttl_seconds=settings.memory_ttl_seconds,
+        )
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)
 
