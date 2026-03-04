@@ -15,8 +15,29 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
+from src.common import JobPilotError
 from src.config import get_embedding_model, load_settings
 from src.retrieval.documents import chunk_documents, iter_source_files, load_documents
+
+
+_FALLBACK_STOPWORDS = {
+    "그리고",
+    "또는",
+    "그러나",
+    "때문",
+    "위해",
+    "관련",
+    "대한",
+    "에서",
+    "으로",
+    "하다",
+    "합니다",
+    "있는",
+    "없는",
+    "경우",
+    "사용",
+    "기반",
+}
 
 
 def _tokenize(text: str) -> list[str]:
@@ -93,7 +114,20 @@ def _strip_korean_particles(token: str) -> str:
 def _tokenize_fallback(text: str) -> list[str]:
     rough = re.findall(r"[0-9A-Za-z가-힣]+", text.lower())
     tokens = [_strip_korean_particles(token) for token in rough]
-    return [token for token in tokens if token]
+    return [
+        token
+        for token in tokens
+        if token and token not in _FALLBACK_STOPWORDS and len(token) > 1
+    ]
+
+
+@lru_cache(maxsize=1)
+def _tokenizer_backend_name() -> str:
+    if _get_kiwi() is not None:
+        return "kiwi"
+    if _get_okt() is not None:
+        return "okt"
+    return "fallback"
 
 
 @lru_cache(maxsize=1)
@@ -141,6 +175,15 @@ def _corpus_signature(paths: list[Path], root: Path) -> str:
     return "|".join(records)
 
 
+def _normalize_weights(vector_weight: float, bm25_weight: float) -> tuple[float, float]:
+    vw = max(vector_weight, 0.0)
+    bw = max(bm25_weight, 0.0)
+    total = vw + bw
+    if total <= 1e-8:
+        return 0.6, 0.4
+    return vw / total, bw / total
+
+
 @dataclass
 class SearchHit:
     content: str
@@ -152,10 +195,20 @@ class SearchHit:
 class HybridRetriever:
     """Simple in-memory hybrid retriever."""
 
-    def __init__(self, chunks: list[Document], vector_db: FAISS, bm25: BM25Okapi) -> None:
+    def __init__(
+        self,
+        chunks: list[Document],
+        vector_db: FAISS,
+        bm25: BM25Okapi,
+        vector_weight: float = 0.6,
+        bm25_weight: float = 0.4,
+        tokenizer_backend: str = "fallback",
+    ) -> None:
         self.chunks = chunks
         self.vector_db = vector_db
         self.bm25 = bm25
+        self.vector_weight, self.bm25_weight = _normalize_weights(vector_weight, bm25_weight)
+        self.tokenizer_backend = tokenizer_backend
 
     @classmethod
     def build(cls) -> "HybridRetriever":
@@ -169,6 +222,9 @@ class HybridRetriever:
 
         chunks: list[Document] | None = None
         vector_db: FAISS | None = None
+        tokenizer_backend = _tokenizer_backend_name()
+        vector_weight = settings.vector_weight
+        bm25_weight = settings.bm25_weight
         if (
             not settings.index_force_rebuild
             and faiss_dir.exists()
@@ -178,6 +234,9 @@ class HybridRetriever:
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if isinstance(meta, dict) and meta.get("signature") == signature:
+                    vector_weight = float(meta.get("vector_weight", settings.vector_weight))
+                    bm25_weight = float(meta.get("bm25_weight", settings.bm25_weight))
+                    tokenizer_backend = str(meta.get("tokenizer_backend", tokenizer_backend))
                     embeddings = get_embedding_model()
                     vector_db = FAISS.load_local(
                         str(faiss_dir),
@@ -201,13 +260,24 @@ class HybridRetriever:
         if chunks is not None and vector_db is not None:
             tokenized_chunks = [_tokenize(doc.page_content) for doc in chunks]
             bm25 = BM25Okapi(tokenized_chunks)
-            return cls(chunks=chunks, vector_db=vector_db, bm25=bm25)
+            return cls(
+                chunks=chunks,
+                vector_db=vector_db,
+                bm25=bm25,
+                vector_weight=vector_weight,
+                bm25_weight=bm25_weight,
+                tokenizer_backend=tokenizer_backend,
+            )
 
         docs = load_documents(settings.knowledge_dir)
         if not docs:
-            raise ValueError(
-                f"No knowledge documents found in {settings.knowledge_dir}. "
-                "Add .txt/.md/.csv/.pdf/.docx/.xlsx files before running."
+            raise JobPilotError(
+                error_code="KNOWLEDGE_EMPTY",
+                detail=(
+                    f"No knowledge documents found in {settings.knowledge_dir}. "
+                    "Add .txt/.md/.csv/.pdf/.docx/.xlsx files before running."
+                ),
+                status_code=400,
             )
 
         chunks = chunk_documents(docs, settings.chunk_size, settings.chunk_overlap)
@@ -221,13 +291,35 @@ class HybridRetriever:
         ]
         chunks_path.write_text(json.dumps(chunks_payload, ensure_ascii=False), encoding="utf-8")
         meta_path.write_text(
-            json.dumps({"signature": signature}, ensure_ascii=False, indent=2),
+            json.dumps(
+                {
+                    "signature": signature,
+                    "vector_weight": _normalize_weights(
+                        settings.vector_weight,
+                        settings.bm25_weight,
+                    )[0],
+                    "bm25_weight": _normalize_weights(
+                        settings.vector_weight,
+                        settings.bm25_weight,
+                    )[1],
+                    "tokenizer_backend": tokenizer_backend,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             encoding="utf-8",
         )
 
         tokenized_chunks = [_tokenize(doc.page_content) for doc in chunks]
         bm25 = BM25Okapi(tokenized_chunks)
-        return cls(chunks=chunks, vector_db=vector_db, bm25=bm25)
+        return cls(
+            chunks=chunks,
+            vector_db=vector_db,
+            bm25=bm25,
+            vector_weight=settings.vector_weight,
+            bm25_weight=settings.bm25_weight,
+            tokenizer_backend=tokenizer_backend,
+        )
 
     def _vector_scores(self, query: str, top_k: int) -> dict[int, float]:
         docs_with_scores = self.vector_db.similarity_search_with_score(query, k=top_k)
@@ -277,9 +369,9 @@ class HybridRetriever:
 
         merged: dict[int, float] = {}
         for idx, score in vector_scores.items():
-            merged[idx] = merged.get(idx, 0.0) + (0.6 * score)
+            merged[idx] = merged.get(idx, 0.0) + (self.vector_weight * score)
         for idx, score in bm25_scores.items():
-            merged[idx] = merged.get(idx, 0.0) + (0.4 * score)
+            merged[idx] = merged.get(idx, 0.0) + (self.bm25_weight * score)
 
         rescored: list[tuple[int, float]] = []
         lowered_filter = {item.lower() for item in category_filter} if category_filter else None

@@ -10,14 +10,17 @@ from uuid import uuid4
 import pandas as pd
 import streamlit as st
 
+from src.common import JobPilotError
 from src.config import load_settings
+from src.utils.pii import mask_pii_payload
 from src.workflow import ChatRequest, JobPilotService
 
 MAX_QUERY_CHARS = 1500
 DEFAULT_MAX_RESUME_CHARS = 30000
+DEFAULT_MAX_JD_CHARS = 12000
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner="지식 인덱스 생성/로딩 중입니다. 첫 실행은 다소 시간이 걸릴 수 있습니다...")
 def get_service() -> JobPilotService:
     return JobPilotService()
 
@@ -42,6 +45,33 @@ def _save_persisted_history(history: list[dict]) -> None:
     path = _history_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _show_error_by_code(error_code: str, detail: str) -> None:
+    lower = (error_code or "").upper()
+    if lower == "KNOWLEDGE_EMPTY":
+        settings = load_settings()
+        st.error("지식 문서가 없어 RAG를 실행할 수 없습니다.")
+        st.info(
+            "다음 경로에 예시 파일을 넣어주세요: "
+            f"`{settings.knowledge_dir}` (.txt/.md/.csv/.pdf/.docx/.xlsx)"
+        )
+        with st.expander("해결 가이드", expanded=False):
+            st.markdown(
+                "- 1) `data/knowledge` 아래에 최소 1개 문서를 추가하세요.\n"
+                "- 2) 예: `job_postings/sample_jd.md`, `interview_guides/backend_qna.txt`\n"
+                "- 3) 다시 `에이전트 실행`을 누르세요."
+            )
+        return
+    if lower == "CONFIG_MISSING_ENV":
+        st.error("필수 환경변수가 누락되어 실행할 수 없습니다.")
+        st.info("`final-project/.env` 파일의 AOAI 관련 항목을 확인하세요.")
+        with st.expander("필수 환경변수 목록", expanded=False):
+            st.code(
+                "AOAI_ENDPOINT\nAOAI_API_KEY\nAOAI_DEPLOY_GPT4O\nAOAI_DEPLOY_EMBED_ADA\nAOAI_API_VERSION"
+            )
+        return
+    st.error(f"실행 오류({error_code}): {detail}")
 
 
 def _extract_uploaded_text(uploaded_file) -> str:
@@ -117,6 +147,8 @@ def run() -> None:
         st.session_state.query_input = ""
     if "target_role_input" not in st.session_state:
         st.session_state.target_role_input = "백엔드 개발자"
+    if "jd_text_input" not in st.session_state:
+        st.session_state.jd_text_input = ""
     if "last_response" not in st.session_state:
         st.session_state.last_response = None
     if "max_resume_chars" not in st.session_state:
@@ -125,6 +157,12 @@ def run() -> None:
         st.session_state.auto_compress_resume = False
     if "resume_target_chars" not in st.session_state:
         st.session_state.resume_target_chars = 18000
+    if "max_jd_chars" not in st.session_state:
+        st.session_state.max_jd_chars = DEFAULT_MAX_JD_CHARS
+    if "persist_history_enabled" not in st.session_state:
+        st.session_state.persist_history_enabled = True
+    if "mask_pii_enabled" not in st.session_state:
+        st.session_state.mask_pii_enabled = False
 
     with st.sidebar:
         st.subheader("입력 설정")
@@ -132,6 +170,7 @@ def run() -> None:
         if st.button("새 대화 시작", use_container_width=True):
             st.session_state.session_id = f"session-{uuid4().hex[:8]}"
             st.session_state.resume_text_input = ""
+            st.session_state.jd_text_input = ""
             st.session_state.query_input = ""
             st.session_state.target_role_input = "백엔드 개발자"
             st.session_state.last_response = None
@@ -147,7 +186,8 @@ def run() -> None:
                     real_idx = len(history) - idx
                     st.markdown(f"**{idx}. {item['query']}**")
                     st.caption(
-                        f"직무: {item['target_role']} | 세션: {item['session_id']} | 이력서 길이: {item['resume_len']}자"
+                        f"직무: {item['target_role']} | 세션: {item['session_id']} | "
+                        f"이력서 길이: {item['resume_len']}자 | JD 길이: {item.get('jd_len', 0)}자"
                     )
                     col_a, col_b = st.columns(2)
                     if col_a.button("다시 불러오기", key=f"load_{real_idx}", use_container_width=True):
@@ -155,16 +195,19 @@ def run() -> None:
                         st.session_state.query_input = item.get("query", "")
                         st.session_state.target_role_input = item.get("target_role", "백엔드 개발자")
                         st.session_state.resume_text_input = item.get("resume_text", "")
+                        st.session_state.jd_text_input = item.get("jd_text", "")
                         st.session_state.last_response = item.get("response")
-                        st.info("질문/직무/이력서/결과를 복원했습니다.")
+                        st.info("질문/직무/JD/이력서/결과를 복원했습니다.")
                         st.rerun()
                     if col_b.button("삭제", key=f"delete_{real_idx}", use_container_width=True):
                         del st.session_state.input_history[real_idx]
-                        _save_persisted_history(st.session_state.input_history)
+                        if st.session_state.persist_history_enabled:
+                            _save_persisted_history(st.session_state.input_history)
                         st.rerun()
                 if st.button("기록 전체 삭제", type="secondary", use_container_width=True):
                     st.session_state.input_history = []
-                    _save_persisted_history(st.session_state.input_history)
+                    if st.session_state.persist_history_enabled:
+                        _save_persisted_history(st.session_state.input_history)
                     st.rerun()
 
         st.selectbox(
@@ -194,6 +237,32 @@ def run() -> None:
                 key="resume_target_chars",
                 disabled=not st.session_state.auto_compress_resume,
             )
+            st.number_input(
+                "JD/공고 최대 글자 수(하드 제한)",
+                min_value=2000,
+                max_value=30000,
+                step=500,
+                key="max_jd_chars",
+                help="JD/공고 텍스트 입력 제한입니다.",
+            )
+        with st.expander("서비스/개인정보 설정", expanded=False):
+            st.caption("운영 환경에서 저장 정책과 마스킹 정책을 조정할 수 있습니다.")
+            st.checkbox(
+                "실행 입력 기록 파일 저장 사용",
+                key="persist_history_enabled",
+                help="해제 시 실행 기록은 현재 세션 메모리에만 유지되고 파일에는 저장되지 않습니다.",
+            )
+            st.checkbox(
+                "저장 전 이메일/전화번호 마스킹",
+                key="mask_pii_enabled",
+                help="실행 입력 기록 저장 전 민감정보를 [EMAIL_MASKED]/[PHONE_MASKED]로 치환합니다.",
+            )
+            if st.button("인덱스 사전 빌드/로드", use_container_width=True):
+                with st.spinner("지식 인덱스 사전 빌드/로드 중입니다..."):
+                    get_service.clear()
+                    get_service()
+                st.success("인덱스 사전 준비가 완료되었습니다.")
+            st.caption("첫 실행에서는 인덱스 생성으로 30~90초 이상 소요될 수 있습니다.")
 
     if len(st.session_state.query_input or "") > MAX_QUERY_CHARS:
         st.session_state.query_input = (st.session_state.query_input or "")[:MAX_QUERY_CHARS]
@@ -215,6 +284,11 @@ def run() -> None:
         type=["txt", "md", "pdf", "docx", "xlsx"],
         help="업로드하면 파일 내용이 아래 이력서 텍스트에 자동 반영됩니다.",
     )
+    uploaded_jd = st.file_uploader(
+        "JD/공고 파일 업로드(선택)",
+        type=["txt", "md", "pdf", "docx", "xlsx"],
+        help="업로드하면 파일 내용이 아래 JD/공고 텍스트에 자동 반영됩니다.",
+    )
 
     extracted_resume = ""
     if uploaded_resume is not None:
@@ -228,6 +302,12 @@ def run() -> None:
                     st.info("업로드 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
             st.success(f"파일 분석 완료: {uploaded_resume.name}")
             st.session_state.resume_text_input = extracted_resume
+
+    if uploaded_jd is not None:
+        extracted_jd = _extract_uploaded_text(uploaded_jd)
+        if extracted_jd:
+            st.success(f"JD 파일 분석 완료: {uploaded_jd.name}")
+            st.session_state.jd_text_input = extracted_jd
 
     max_resume_chars = int(st.session_state.max_resume_chars)
     if len(st.session_state.resume_text_input or "") > max_resume_chars:
@@ -251,6 +331,25 @@ def run() -> None:
         f"이력서 텍스트는 최대 {max_resume_chars:,}자까지 입력 가능합니다. "
         "입력창 내부 카운터가 실시간 기준입니다."
     )
+    max_jd_chars = int(st.session_state.max_jd_chars)
+    if len(st.session_state.jd_text_input or "") > max_jd_chars:
+        st.session_state.jd_text_input = (st.session_state.jd_text_input or "")[:max_jd_chars]
+        st.warning(
+            f"JD/공고 텍스트는 최대 {max_jd_chars:,}자까지 입력할 수 있어 자동으로 잘렸습니다."
+        )
+    st.text_area(
+        "JD/공고 텍스트(선택)",
+        height=180,
+        placeholder="채용공고/JD 텍스트를 붙여넣거나 위에서 파일 업로드를 사용하세요.",
+        key="jd_text_input",
+        max_chars=max_jd_chars,
+        help=f"최대 {max_jd_chars:,}자까지 입력할 수 있습니다. 입력 중 글자 수가 실시간 표시됩니다.",
+    )
+    jd_text = st.session_state.jd_text_input
+    st.caption(
+        f"JD/공고 텍스트는 최대 {max_jd_chars:,}자까지 입력 가능합니다. "
+        "입력창 내부 카운터가 실시간 기준입니다."
+    )
 
     if st.button(
         "에이전트 실행",
@@ -260,6 +359,7 @@ def run() -> None:
         query = st.session_state.query_input
         target_role = st.session_state.target_role_input
         resume_text_for_run = resume_text
+        jd_text_for_run = jd_text
         if not query.strip():
             st.warning("질문/요청을 입력해 주세요.")
             return
@@ -291,52 +391,31 @@ def run() -> None:
                         user_query=query,
                         target_role=target_role,
                         resume_text=resume_text_for_run,
+                        jd_text=jd_text_for_run,
                     )
                 )
-        except ValueError as exc:
-            message = str(exc)
-            lower = message.lower()
-            if "no knowledge documents found" in lower:
-                settings = load_settings()
-                st.error("지식 문서가 없어 RAG를 실행할 수 없습니다.")
-                st.info(
-                    "다음 경로에 예시 파일을 넣어주세요: "
-                    f"`{settings.knowledge_dir}` (.txt/.md/.csv/.pdf/.docx/.xlsx)"
-                )
-                with st.expander("해결 가이드", expanded=False):
-                    st.markdown(
-                        "- 1) `data/knowledge` 아래에 최소 1개 문서를 추가하세요.\n"
-                        "- 2) 예: `job_postings/sample_jd.md`, `interview_guides/backend_qna.txt`\n"
-                        "- 3) 다시 `에이전트 실행`을 누르세요."
-                    )
-                return
-
-            if "missing environment variables" in lower:
-                st.error("필수 환경변수가 누락되어 실행할 수 없습니다.")
-                st.info("`final-project/.env` 파일의 AOAI 관련 항목을 확인하세요.")
-                with st.expander("필수 환경변수 목록", expanded=False):
-                    st.code(
-                        "AOAI_ENDPOINT\nAOAI_API_KEY\nAOAI_DEPLOY_GPT4O\nAOAI_DEPLOY_EMBED_ADA\nAOAI_API_VERSION"
-                    )
-                return
-
-            st.error(f"실행 오류: {message}")
+        except JobPilotError as exc:
+            _show_error_by_code(exc.error_code, exc.detail)
             return
         except Exception as exc:
             st.error(f"서비스 실행 중 예기치 못한 오류가 발생했습니다: {exc}")
             return
 
-        st.session_state.input_history.append(
-            {
-                "session_id": st.session_state.session_id,
-                "query": query.strip(),
-                "target_role": target_role,
-                "resume_text": resume_text_for_run,
-                "resume_len": len(resume_text_for_run),
-                "response": response.model_dump(),
-            }
-        )
-        _save_persisted_history(st.session_state.input_history)
+        record = {
+            "session_id": st.session_state.session_id,
+            "query": query.strip(),
+            "target_role": target_role,
+            "resume_text": resume_text_for_run,
+            "jd_text": jd_text_for_run,
+            "resume_len": len(resume_text_for_run),
+            "jd_len": len(jd_text_for_run),
+            "response": response.model_dump(),
+        }
+        if st.session_state.mask_pii_enabled:
+            record = mask_pii_payload(record)
+        st.session_state.input_history.append(record)
+        if st.session_state.persist_history_enabled:
+            _save_persisted_history(st.session_state.input_history)
         st.session_state.last_response = response.model_dump()
         # Rerun to refresh sidebar history immediately after append.
         st.rerun()
@@ -349,21 +428,29 @@ def run() -> None:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("이력서 개선")
-            for item in latest["resume_improvements"]:
-                st.markdown(f"- {item}")
+            resume_items = latest.get("resume_improvements", []) or []
+            if resume_items:
+                st.subheader("이력서 개선")
+                for item in resume_items:
+                    st.markdown(f"- {item}")
         with col2:
-            st.subheader("면접 준비")
-            for item in latest["interview_preparation"]:
+            interview_items = latest.get("interview_preparation", []) or []
+            if interview_items:
+                st.subheader("면접 준비")
+                for item in interview_items:
+                    st.markdown(f"- {item}")
+
+        plan_items = latest.get("two_week_plan", []) or []
+        if plan_items:
+            st.subheader("2주 실행 계획")
+            for item in plan_items:
                 st.markdown(f"- {item}")
 
-        st.subheader("2주 실행 계획")
-        for item in latest["two_week_plan"]:
-            st.markdown(f"- {item}")
-
-        st.subheader("참고 출처")
-        for item in latest["references"]:
-            st.markdown(f"- {item}")
+        references = latest.get("references", []) or []
+        if references:
+            st.subheader("참고 출처")
+            for item in references:
+                st.markdown(f"- {item}")
 
 
 if __name__ == "__main__":

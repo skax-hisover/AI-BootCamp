@@ -21,7 +21,7 @@
 ### **1.2 핵심 아이디어 및 가치 제안(Value Proposition)**
 
 - **서비스가 제공하는 핵심 기능은 무엇인가?**  
-  1) 공고-이력서 갭 분석, 2) 맞춤 이력서/포트폴리오 개선안, 3) 직무별 면접 질문/모범답변, 4) 2주 실행 플랜 자동 생성
+  1) 공고-이력서 갭 분석(`jd_text` + `resume_text` 비교), 2) 맞춤 이력서/포트폴리오 개선안, 3) 직무별 면접 질문/모범답변, 4) 2주 실행 플랜 자동 생성
 
 - **사용자에게 제공되는 가치와 기대효과는 무엇인가?**  
   준비 시간 단축, 준비 품질 향상, 실제 면접 대응력 강화, 일관된 학습/준비 루틴 형성
@@ -33,6 +33,7 @@
   - 라우팅 정확도: 의도 라벨(`resume_only`, `interview_only`, `plan_only`, `full`) 기준 샘플 질의셋 Top-1 정확도 측정
   - 근거 포함률: 최종 응답에서 `references`가 1개 이상 포함된 비율과, 근거-본문 의미 일치 여부(수기 체크리스트) 측정
   - 실행 플랜 품질: `two_week_plan` 항목의 실행 가능성(구체 행동/기한/우선순위 포함 여부) 점수화(예: 5점 척도) 비교
+  - 자동화 경로: `scripts/evaluate_differentiation_metrics.py` + `data/eval/sample_queries.json`로 배치 평가(임계치 미달 시 실패 코드 반환)
 
 ### **1.3 대상 사용자 및 기대 사용자 경험(UX)**
 
@@ -40,7 +41,7 @@
   신입 구직자, 주니어/미드레벨 이직 준비자, 부트캠프 수료생
 
 - **사용자에게 어떤 흐름과 경험을 제공할 것인가?**  
-  질문 입력/직무 선택 -> 자료 업로드(이력서 파일 또는 텍스트) -> 분석 결과 확인 -> 입력 기록 저장 -> 필요 시 "다시 불러오기"로 과거 입력/결과 복원 -> 액션 아이템 실행
+  질문 입력/직무 선택 -> 자료 업로드(JD/공고 + 이력서 파일 또는 텍스트) -> 분석 결과 확인 -> 입력 기록 저장 -> 필요 시 "다시 불러오기"로 과거 입력/결과 복원 -> 액션 아이템 실행
 
 - **사용자가 서비스에서 얻는 구체적 Benefit은 무엇인가?**  
   "지금 무엇을 고쳐야 하는지"가 명확한 체크리스트와 근거 문서 기반 조언, 즉시 활용 가능한 답변 초안
@@ -59,6 +60,8 @@
 
 - **출력 구조화 템플릿 정의**  
   JSON 스키마 기반 출력(요약, 강점/약점, 개선안, 근거 출처, 다음 액션)
+  - route-aware 출력 규칙: `resume_only / interview_only / plan_only / full` 라우트에 따라 섹션 최소 개수/표시 여부를 다르게 적용해 불필요 섹션은 빈 배열로 반환
+  - 근거 추적 강화: 중간 산출물에 `evidence_map`(항목 -> 근거 chunk 번호)과 최종 액션 불릿의 citation(`[1][2]`) 표기를 요구해 근거-결론 연결성을 명시
 
 - **사용자 유형/상황별 프롬프트 분기**  
   신입/경력, 직무(백엔드/데이터/PM), 목표 회사 수준(대기업/스타트업)에 따라 프롬프트 분기
@@ -66,13 +69,14 @@
 ### **2.2 LangChain / LangGraph 기반 Agent 구조**
 
 - **Multi-Agent 설계 개념**  
-  Supervisor가 사용자 요청을 분류/라우팅하고, 전문 Agent 결과를 통합해 최종 응답 생성
+  Supervisor가 사용자 요청을 분류/라우팅하고, RAG 근거를 공통으로 확보한 뒤 Resume/Interview/Plan Agent가 분업 처리한 결과를 통합해 최종 응답 생성
 
 - **각 Agent의 역할(Role) 정의**  
   - `Supervisor(Planner 역할 포함)`: 요청 분해, 우선순위 결정, 결과 통합  
   - `Resume Agent`: 이력서/포트폴리오 개선  
   - `Interview Agent`: 예상 질문/답변 코칭  
-  - `RAG Agent`: 지식 검색 및 근거 제공
+  - `Plan Agent`: 우선순위/일정/검증 방법 중심 2주 실행 계획 수립  
+  - `RAG Agent`: 지식 검색 및 근거 제공(plan_only 포함 모든 라우트에서 최소 근거 확보)
 
 - **Tool Calling, ReAct, Memory 활용 여부**  
   Tool Calling(필수), ReAct 스타일 도구 루프(max step 기반 종료), 세션 메모리 + LangGraph Checkpointer(그래프 실행 상태) 적용
@@ -87,6 +91,9 @@
 
 - **검색 로직과 응답 생성 방식**  
   하이브리드 검색(BM25 + 벡터 유사도) -> 상위 문서 재정렬 -> 출처 포함 응답 생성
+  - 재현성 관리: 형태소 분석기(`kiwi/okt`) 사용 여부와 fallback 토크나이저 적용 결과를 메타에 기록해 환경별 품질 편차를 추적
+  - 튜닝 포인트 분리: 하이브리드 가중치(`VECTOR_WEIGHT`, `BM25_WEIGHT`)를 설정값으로 분리해 실험/운영에서 빠르게 조정
+  - 안전모드 고도화: 검색 결과가 있더라도 최고 점수가 임계치 미만이면(`RAG_EVIDENCE_SCORE_THRESHOLD`) 근거 부족 모드로 전환해 보수적 표현을 우선
 
 - **도메인 지식 범위(출처 유형/라이선스/최신성)**  
   - 출처 유형: 채용공고 요약본, 직무기술서(JD) 정리본, 면접 가이드, 포트폴리오 작성 예시  
@@ -102,10 +109,13 @@
 ### **2.4 서비스 개발 및 패키징 계획**
 
 - **UI 개발 방식(Streamlit, React 등)**  
-  Streamlit 기반 대화형 UI(질문/직무 입력, 이력서 파일 업로드, 결과 카드, 실행 입력 기록 조회/삭제, 다시 불러오기, 입력란 내부 실시간 카운터(`max_chars`) 기반 대용량 입력 방어)
+  Streamlit 기반 대화형 UI(질문/직무 입력, JD/공고 + 이력서 파일 업로드, 결과 카드, 실행 입력 기록 조회/삭제, 다시 불러오기, 입력란 내부 실시간 카운터(`max_chars`) 기반 대용량 입력 방어)
+  - 인덱스 UX 보강: 첫 실행 인덱싱 지연을 안내하고, 관리용 "인덱스 사전 빌드/로드" 동작을 제공해 대기 시간을 예측 가능하게 설계
+  - 개인정보 옵션: 실행 입력 기록 파일 저장 on/off와 저장 전 이메일/전화번호 마스킹 옵션으로 운영 환경의 민감정보 노출 리스크 완화
 
 - **BE(API) 및 배포 전략(FastAPI, Docker 등)**  
   FastAPI로 Agent 실행 API 분리, 예외 처리(400/500)로 사용자 친화적 오류 응답 제공, 로컬 Docker 옵션 제공(선택)
+  - 에러 처리 표준화: 문자열 파싱 대신 `error_code/detail` 공통 계약(`JobPilotError`)을 API/CLI/UI에 일관 적용해 프론트-백 분기 안정성 확보
 
 - **설정/환경 관리 계획**  
   `final-project/.env` 사용, `src/config/settings.py`에서 로드, `requirements-final.txt`로 의존성 고정, 필요 시 `INDEX_FORCE_REBUILD=true`로 인덱스 강제 재생성
@@ -132,7 +142,7 @@
   "백엔드 개발자 이직 준비" 목표로 공고와 이력서를 업로드해 부족 역량을 파악하고 2주 계획 수립
 
 - **서비스 이용 단계별 행동 정의**  
-  1) 목표 직무 선택 및 질문 입력 -> 2) 이력서 파일 업로드/텍스트 입력 -> 3) 멀티 에이전트 분석 실행 -> 4) 결과 확인 및 저장 -> 5) 필요 시 기록에서 다시 불러오기 -> 6) 개선안 반영 및 최종 점검
+  1) 목표 직무 선택 및 질문 입력 -> 2) JD/공고 + 이력서 파일 업로드/텍스트 입력 -> 3) 멀티 에이전트 분석 실행 -> 4) 결과 확인 및 저장 -> 5) 필요 시 기록에서 다시 불러오기 -> 6) 개선안 반영 및 최종 점검
 
 ### **3.2 시스템 구조도 / Multi-Agent 다이어그램**
 
@@ -144,13 +154,15 @@
 ```mermaid
 flowchart TD
     U[User/Streamlit UI] --> S[Supervisor Agent]
-    S --> R1[Resume Agent]
-    S --> I1[Interview Agent]
     S --> G1[RAG Agent]
+    G1 --> R1[Resume Agent]
+    G1 --> I1[Interview Agent]
+    G1 --> P1[Plan Agent]
     G1 --> V[(FAISS Vector DB)]
     G1 --> B[(BM25 Index)]
     R1 --> S
     I1 --> S
+    P1 --> S
     G1 --> S
     S --> O["Structured Response - JSON"]
     O --> U
@@ -174,6 +186,7 @@ sequenceDiagram
     participant Rag as RAG Agent
     participant Res as Resume Agent
     participant Int as Interview Agent
+    participant Plan as Plan Agent
 
     User->>UI: 질문/문서 업로드
     UI->>Sup: 요청 전달
@@ -181,8 +194,10 @@ sequenceDiagram
     Rag-->>Sup: 근거 문서/요약 반환
     Sup->>Res: 이력서 개선안 생성 요청
     Sup->>Int: 면접 질문/답변 생성 요청
+    Sup->>Plan: 우선순위/일정 계획 생성 요청
     Res-->>Sup: 개선안 반환
     Int-->>Sup: 면접 코칭 반환
+    Plan-->>Sup: 2주 실행 계획/검증 체크 반환
     Sup-->>UI: 통합 결과(JSON)
     UI-->>User: 카드형 결과/체크리스트 출력
 ```
@@ -206,6 +221,7 @@ sequenceDiagram
 
 - **데모 이미지 or 영상 등**  
   제출용 산출물은 `docs/evidence/`에 관리함:  
+  - `docs/evidence/e2e_test_checklist.md` (CLI/FastAPI/Streamlit 통합 실행 체크리스트)  
   - `docs/evidence/streamlit_main_capture.png` (Streamlit 메인 화면 캡처: 입력/출력 동시 노출)  
   - `docs/evidence/agent_execution_log.md` (Supervisor 라우팅 + RAG 검색 근거)  
   - `docs/evidence/agent_final_answer.json` (최종 구조화 응답 원본)  

@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
         default="Python/FastAPI 기반 API 개발 경험 2년, 프로젝트 협업 경험 보유",
     )
     parser.add_argument(
+        "--jd-text",
+        default="백엔드 개발자 채용: Python/FastAPI, RDBMS 튜닝, 장애 대응 경험, 협업 커뮤니케이션",
+    )
+    parser.add_argument(
         "--output-dir",
         default="docs/evidence",
         help="Directory where artifacts are saved",
@@ -56,6 +60,7 @@ def main() -> None:
         "user_query": args.query,
         "target_role": args.target_role,
         "resume_text": args.resume_text,
+        "jd_text": args.jd_text,
     }
     result = service.graph.invoke(
         state,
@@ -82,6 +87,7 @@ def main() -> None:
 ## Input
 - Query: {args.query}
 - Resume text length: {len(args.resume_text)}
+- JD text length: {len(args.jd_text)}
 
 ## Supervisor Routing
 - Route: {route}

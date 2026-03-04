@@ -13,12 +13,16 @@ from threading import RLock
 
 from filelock import FileLock
 
+from src.utils.pii import mask_pii_text
+
 
 @dataclass
 class SessionMemory:
     storage_path: str | Path | None = None
     max_sessions: int = 200
     ttl_seconds: int = 60 * 60 * 24
+    persist_enabled: bool = True
+    pii_mask_enabled: bool = False
     _messages: DefaultDict[str, list[dict[str, str]]] = field(
         default_factory=lambda: defaultdict(list)
     )
@@ -26,7 +30,7 @@ class SessionMemory:
     _mutex: RLock = field(default_factory=RLock)
 
     def __post_init__(self) -> None:
-        if not self.storage_path:
+        if not self.persist_enabled or not self.storage_path:
             return
 
         path = Path(self.storage_path)
@@ -40,7 +44,7 @@ class SessionMemory:
 
     @property
     def _lock_path(self) -> Path | None:
-        if not self.storage_path:
+        if not self.persist_enabled or not self.storage_path:
             return None
         path = Path(self.storage_path)
         return path.with_suffix(path.suffix + ".lock")
@@ -57,7 +61,7 @@ class SessionMemory:
             yield
 
     def _load_from_disk(self) -> None:
-        if not self.storage_path:
+        if not self.persist_enabled or not self.storage_path:
             return
         path = Path(self.storage_path)
         if not path.exists():
@@ -137,14 +141,14 @@ class SessionMemory:
             self._flush()
 
     def _flush(self) -> None:
-        if not self.storage_path:
+        if not self.persist_enabled or not self.storage_path:
             return
 
         with self._with_file_lock():
             self._flush_unlocked()
 
     def _flush_unlocked(self) -> None:
-        if not self.storage_path:
+        if not self.persist_enabled or not self.storage_path:
             return
         path = Path(self.storage_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -157,25 +161,26 @@ class SessionMemory:
 
     def add(self, session_id: str, role: str, content: str) -> None:
         now = time.time()
+        safe_content = mask_pii_text(content) if self.pii_mask_enabled else content
         with self._mutex:
-            if self.storage_path:
+            if self.persist_enabled and self.storage_path:
                 with self._with_file_lock():
                     self._load_from_disk()
                     self._prune(now=now, flush=False)
-                    self._messages[session_id].append({"role": role, "content": content})
+                    self._messages[session_id].append({"role": role, "content": safe_content})
                     self._updated_at[session_id] = now
                     self._enforce_max_sessions()
                     self._flush_unlocked()
                     return
             self._prune(now=now, flush=False)
-            self._messages[session_id].append({"role": role, "content": content})
+            self._messages[session_id].append({"role": role, "content": safe_content})
             self._updated_at[session_id] = now
             self._enforce_max_sessions()
             self._flush()
 
     def get(self, session_id: str, limit: int = 8) -> list[dict[str, str]]:
         with self._mutex:
-            if self.storage_path:
+            if self.persist_enabled and self.storage_path:
                 with self._with_file_lock():
                     self._load_from_disk()
                     self._prune(flush=False)

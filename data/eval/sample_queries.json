@@ -1,0 +1,24 @@
+[
+  {
+    "query": "이력서 개선 포인트 5개만 뽑아줘. 면접은 제외해줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "FastAPI 기반 API 개발 2년, MySQL 운영 경험, AWS 배포 경험",
+    "jd_text": "백엔드 개발자 채용: Python, FastAPI, 성능 최적화, 장애 대응, 협업 능력",
+    "expected_route": "resume_only"
+  },
+  {
+    "query": "면접 질문과 답변 방향만 준비해줘.",
+    "target_role": "데이터 분석가",
+    "resume_text": "",
+    "jd_text": "데이터 분석가 채용: SQL, Python, 지표 설계, 대시보드 운영",
+    "expected_route": "interview_only"
+  },
+  {
+    "query": "이력서와 면접을 같이 준비할 수 있게 2주 계획까지 만들어줘.",
+    "target_role": "PM",
+    "resume_text": "신규 기능 런칭, KPI 모니터링, 유관부서 협업 경험",
+    "jd_text": "PM 채용: 우선순위 결정, 실험 설계, 이해관계자 조율, 로드맵 관리",
+    "expected_route": "full"
+  }
+]
+

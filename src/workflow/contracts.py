@@ -10,12 +10,13 @@ class ChatRequest(BaseModel):
     user_query: str
     target_role: str = Field(default="백엔드 개발자")
     resume_text: str = Field(default="")
+    jd_text: str = Field(default="")
 
 
 class ChatResponse(BaseModel):
     session_id: str
     summary: str
-    resume_improvements: list[str]
-    interview_preparation: list[str]
-    two_week_plan: list[str]
-    references: list[str]
+    resume_improvements: list[str] = Field(default_factory=list)
+    interview_preparation: list[str] = Field(default_factory=list)
+    two_week_plan: list[str] = Field(default_factory=list)
+    references: list[str] = Field(default_factory=list)

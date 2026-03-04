@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
+from src.common import JobPilotError
 
 
 def _int_env(name: str, default: int) -> int:
@@ -27,6 +28,16 @@ def _bool_env(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
+def _float_env(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
 @dataclass(frozen=True)
 class Settings:
     project_root: Path
@@ -44,6 +55,11 @@ class Settings:
     memory_max_sessions: int = 200
     memory_ttl_seconds: int = 60 * 60 * 24
     index_force_rebuild: bool = False
+    vector_weight: float = 0.6
+    bm25_weight: float = 0.4
+    rag_evidence_score_threshold: float = 0.45
+    memory_persist_enabled: bool = True
+    pii_mask_enabled: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -68,6 +84,11 @@ def load_settings() -> Settings:
     memory_max_sessions = _int_env("MEMORY_MAX_SESSIONS", 200)
     memory_ttl_seconds = _int_env("MEMORY_TTL_SECONDS", 60 * 60 * 24)
     index_force_rebuild = _bool_env("INDEX_FORCE_REBUILD", False)
+    vector_weight = _float_env("VECTOR_WEIGHT", 0.6)
+    bm25_weight = _float_env("BM25_WEIGHT", 0.4)
+    rag_evidence_score_threshold = _float_env("RAG_EVIDENCE_SCORE_THRESHOLD", 0.45)
+    memory_persist_enabled = _bool_env("MEMORY_PERSIST_ENABLED", True)
+    pii_mask_enabled = _bool_env("PII_MASK_ENABLED", False)
 
     missing = []
     if not endpoint:
@@ -76,7 +97,11 @@ def load_settings() -> Settings:
         missing.append("AOAI_API_KEY")
 
     if missing:
-        raise ValueError(f"Missing environment variables: {', '.join(missing)}")
+        raise JobPilotError(
+            error_code="CONFIG_MISSING_ENV",
+            detail=f"Missing environment variables: {', '.join(missing)}",
+            status_code=400,
+        )
 
     data_dir = project_root / "data"
     knowledge_dir = data_dir / "knowledge"
@@ -97,4 +122,9 @@ def load_settings() -> Settings:
         memory_max_sessions=memory_max_sessions,
         memory_ttl_seconds=memory_ttl_seconds,
         index_force_rebuild=index_force_rebuild,
+        vector_weight=vector_weight,
+        bm25_weight=bm25_weight,
+        rag_evidence_score_threshold=rag_evidence_score_threshold,
+        memory_persist_enabled=memory_persist_enabled,
+        pii_mask_enabled=pii_mask_enabled,
     )
