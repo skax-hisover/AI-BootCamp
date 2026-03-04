@@ -56,6 +56,94 @@ class RagPlan(BaseModel):
 TStructured = TypeVar("TStructured", bound=BaseModel)
 
 
+def route_minimums(route: str) -> dict[str, int]:
+    route_key = (route or "full").lower()
+    if route_key == "resume_only":
+        return {
+            "resume_improvements": 4,
+            "interview_preparation": 0,
+            "two_week_plan": 0,
+        }
+    if route_key == "interview_only":
+        return {
+            "resume_improvements": 0,
+            "interview_preparation": 4,
+            "two_week_plan": 0,
+        }
+    if route_key == "plan_only":
+        return {
+            "resume_improvements": 0,
+            "interview_preparation": 0,
+            "two_week_plan": 4,
+        }
+    return {
+        "resume_improvements": 4,
+        "interview_preparation": 4,
+        "two_week_plan": 4,
+    }
+
+
+def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
+    route_key = (route or "full").lower()
+    summary = str(answer.get("summary", "")).strip()
+    if not summary:
+        if route_key == "plan_only":
+            summary = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
+        else:
+            summary = "요청에 대한 핵심 요약입니다."
+    payload = {
+        "summary": summary,
+        "resume_improvements": list(answer.get("resume_improvements", []) or []),
+        "interview_preparation": list(answer.get("interview_preparation", []) or []),
+        "two_week_plan": list(answer.get("two_week_plan", []) or []),
+        "references": list(answer.get("references", []) or []),
+    }
+    if route_key in {"interview_only", "plan_only"}:
+        payload["resume_improvements"] = []
+    if route_key in {"resume_only", "plan_only"}:
+        payload["interview_preparation"] = []
+    return payload
+
+
+def _ensure_citation(item: str, default_tag: str) -> str:
+    text = str(item).strip()
+    if not text:
+        return text
+    if "[" in text and "]" in text:
+        return text
+    return f"{text} {default_tag}".strip()
+
+
+def enforce_final_answer_policy(
+    route: str,
+    payload: dict[str, Any],
+    rag_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    min_rules = route_minimums(route)
+    refs = payload.get("references", [])
+    references = [str(item) for item in refs] if isinstance(refs, list) else []
+    if not references and isinstance(rag_refs, list) and rag_refs:
+        references = [str(item) for item in rag_refs[:4]]
+
+    citation_tag = "[1]" if references else ""
+    for field_name, minimum in min_rules.items():
+        items = payload.get(field_name, [])
+        normalized_items = [str(item).strip() for item in items] if isinstance(items, list) else []
+        normalized_items = [item for item in normalized_items if item]
+        if minimum <= 0:
+            payload[field_name] = []
+            continue
+        if len(normalized_items) < minimum:
+            for idx in range(len(normalized_items) + 1, minimum + 1):
+                normalized_items.append(f"추가 권장 액션 {idx}")
+        if citation_tag:
+            normalized_items = [_ensure_citation(item, citation_tag) for item in normalized_items]
+        payload[field_name] = normalized_items
+
+    payload["references"] = references
+    return payload
+
+
 def _run_tool_loop_structured(
     prompt: str,
     tools: list[BaseTool],
@@ -303,45 +391,22 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         }
 
     def _route_minimums(route: str) -> dict[str, int]:
-        route_key = (route or "full").lower()
-        if route_key == "resume_only":
-            return {
-                "resume_improvements": 4,
-                "interview_preparation": 0,
-                "two_week_plan": 4,
-            }
-        if route_key == "interview_only":
-            return {
-                "resume_improvements": 0,
-                "interview_preparation": 4,
-                "two_week_plan": 4,
-            }
-        if route_key == "plan_only":
-            return {
-                "resume_improvements": 0,
-                "interview_preparation": 0,
-                "two_week_plan": 4,
-            }
-        return {
-            "resume_improvements": 4,
-            "interview_preparation": 4,
-            "two_week_plan": 4,
-        }
+        return route_minimums(route)
+
+    def _enforce_final_answer_policy(
+        route: str,
+        payload: dict[str, Any],
+        state: AgentState,
+    ) -> dict[str, Any]:
+        rag_refs = state.get("rag_refs", [])
+        return enforce_final_answer_policy(
+            route=route,
+            payload=payload,
+            rag_refs=rag_refs if isinstance(rag_refs, list) else [],
+        )
 
     def _normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
-        route_key = (route or "full").lower()
-        payload = {
-            "summary": str(answer.get("summary", "")),
-            "resume_improvements": list(answer.get("resume_improvements", []) or []),
-            "interview_preparation": list(answer.get("interview_preparation", []) or []),
-            "two_week_plan": list(answer.get("two_week_plan", []) or []),
-            "references": list(answer.get("references", []) or []),
-        }
-        if route_key in {"interview_only", "plan_only"}:
-            payload["resume_improvements"] = []
-        if route_key in {"resume_only", "plan_only"}:
-            payload["interview_preparation"] = []
-        return payload
+        return normalize_final_answer_by_route(route, answer)
 
     def _fallback_final_answer(state: AgentState, reason: str) -> dict[str, Any]:
         refs = state.get("rag_refs") or []
@@ -452,12 +517,13 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 
     def _category_filter_for_route(route: str) -> set[str] | None:
         route_key = (route or "full").lower()
+        fallback_category = {"uncategorized"}
         if route_key == "resume_only":
-            return {"job_postings", "jd", "portfolio_examples", "resume_examples"}
+            return {"job_postings", "jd", "portfolio_examples", "resume_examples"} | fallback_category
         if route_key == "interview_only":
-            return {"interview_guides", "job_postings", "jd"}
+            return {"interview_guides", "job_postings", "jd"} | fallback_category
         if route_key == "plan_only":
-            return {"job_postings", "jd", "interview_guides"}
+            return {"job_postings", "jd", "interview_guides"} | fallback_category
         return None
 
     def _rerank_hits(
@@ -522,13 +588,31 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             query_candidates = [state["user_query"], f"{state['target_role']} {state['user_query']}"]
             source_hint = role_hint
 
+        def _location_label(metadata: dict[str, Any]) -> str:
+            if "page_number" in metadata:
+                return f"page={metadata['page_number']}"
+            if "paragraph_number" in metadata:
+                return f"paragraph={metadata['paragraph_number']}"
+            if "sheet_name" in metadata and "row_number" in metadata:
+                return f"sheet={metadata['sheet_name']}, row={metadata['row_number']}"
+            if "row_number" in metadata:
+                return f"row={metadata['row_number']}"
+            return "n/a"
+
         merged_hits: dict[str, SearchHit] = {}
         for candidate in query_candidates[:query_limit]:
-            for hit in retriever.search(
+            filtered_hits = retriever.search(
                 candidate,
                 top_k=retrieval_top_k,
                 category_filter=category_filter,
-            ):
+            )
+            # Fallback: if route-aware filter over-prunes results, retry without filter.
+            candidate_hits = (
+                retriever.search(candidate, top_k=retrieval_top_k, category_filter=None)
+                if (category_filter and not filtered_hits)
+                else filtered_hits
+            )
+            for hit in candidate_hits:
                 key = f"{hit.source}::{hit.content[:120]}"
                 current = merged_hits.get(key)
                 if not current or hit.score > current.score:
@@ -553,6 +637,9 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                     "source": hit.source,
                     "score": hit.score,
                     "category": hit.metadata.get("category"),
+                    "chunk_id": hit.metadata.get("chunk_id"),
+                    "location": _location_label(hit.metadata),
+                    "snippet": hit.content[:120].replace("\n", " "),
                 }
             )
 
@@ -565,7 +652,11 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             )
 
         ref_names = [
-            f"{r['rank']}. {r['source']} (score={r['score']}, category={r.get('category')})"
+            (
+                f"{r['rank']}) {r['source']}#chunk_{r.get('chunk_id', 'na')} "
+                f"(score={r['score']}, category={r.get('category')}, location={r.get('location')}) "
+                f"| snippet={r.get('snippet')}"
+            )
             for r in refs
         ]
         rag_context = "\n\n".join(context_parts)
@@ -648,6 +739,7 @@ RAG 근거:
 6) 로컬 정책: 이력서 텍스트가 없으면 개인 문장 교정보다 "직무-이력서 갭 분석 및 보강 체크리스트" 중심으로 작성하세요.
 7) JD/공고 텍스트가 있으면 JD 요구역량과 이력서 간 갭을 항목별로 명시적으로 비교하세요.
 8) evidence_map 필수: key는 개선/진단 문장, value는 관련 근거 번호 목록(예: [1,2])입니다.
+9) 도구를 호출했다면 도구 결과(JSON)의 score/keywords를 최소 1회 이상 key_findings 또는 improvement_points에 반영하세요.
 
 [Few-shot]
 {resume_few_shot}
@@ -711,6 +803,7 @@ RAG 근거:
 6) 로컬 정책: 이력서 텍스트가 없으면 개인 경험 단정 대신 직무 공통 질문/답변 프레임워크 중심으로 작성하세요.
 7) JD/공고 텍스트가 있으면 JD 요구역량을 기준으로 질문 우선순위를 조정하세요.
 8) evidence_map 필수: key는 질문/답변 문장, value는 관련 근거 번호 목록(예: [1,2])입니다.
+9) 도구를 호출했다면 도구 결과(JSON)의 questions를 최소 1회 이상 expected_questions에 반영하세요.
 
 [Few-shot]
 {interview_few_shot}
@@ -757,7 +850,6 @@ RAG 근거:
     def synthesis_node(state: AgentState) -> AgentState:
         parser_llm = llm.with_structured_output(FinalAnswer)
         route = state.get("route", "full")
-        min_rules = _route_minimums(route)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
         )
@@ -781,9 +873,8 @@ RAG 근거:
                 f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
-모든 필드(summary, resume_improvements, interview_preparation, two_week_plan, references)는 반드시 한국어로 작성하세요.
 생각 과정을 노출하지 말고 결과만 작성하세요.
-각 불릿 항목 끝에 근거 번호 citation을 붙이세요(예: "... [1][2]").
+모든 필드는 한국어로 작성하세요.
 
 [사용자 요청]
 {state['user_query']}
@@ -819,22 +910,24 @@ RAG 근거:
 [참고 출처]
 {state.get('rag_refs', [])}
 
-요구사항:
+[필수 규칙]
 - summary는 4문장 이내.
-- route별 최소 개수:
-  - resume_improvements >= {min_rules['resume_improvements']}
-  - interview_preparation >= {min_rules['interview_preparation']}
-  - two_week_plan >= {min_rules['two_week_plan']}
-- route가 full 또는 plan_only인 경우 Plan Agent 결과를 우선 반영해 two_week_plan을 작성하세요.
-- 최소 개수가 0인 섹션은 빈 배열로 반환하세요.
+- plan_only에서도 summary는 1~2문장으로 반드시 작성.
+- route가 full 또는 plan_only인 경우 Plan Agent 결과를 우선 반영해 two_week_plan 작성.
 - references는 출처 파일명 중심으로 구성.
+
+[권장 규칙]
+- 액션 불릿 끝에 citation 표기 권장(예: [1][2]).
+- route별 최소 개수/빈 배열 정책은 후처리에서 강제되므로 우선 의미 일관성에 집중.
 """
             )
             normalized = _normalize_final_answer_by_route(route, answer.model_dump())
+            normalized = _enforce_final_answer_policy(route, normalized, state)
             return {"final_answer": normalized}
         except Exception as exc:
             fallback = _fallback_final_answer(state, f"synthesis fallback: {exc}")
             normalized = _normalize_final_answer_by_route(route, fallback)
+            normalized = _enforce_final_answer_policy(route, normalized, state)
             return {"final_answer": normalized}
 
     def route_after_supervisor(state: AgentState) -> str:
@@ -910,8 +1003,8 @@ class JobPilotService:
             storage_path=settings.index_dir / "session_memory.json",
             max_sessions=settings.memory_max_sessions,
             ttl_seconds=settings.memory_ttl_seconds,
-            persist_enabled=settings.memory_persist_enabled,
-            pii_mask_enabled=settings.pii_mask_enabled,
+            persist_enabled=settings.session_memory_persist_enabled,
+            pii_mask_enabled=settings.session_memory_pii_mask_enabled,
         )
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)

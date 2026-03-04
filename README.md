@@ -9,7 +9,9 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 - **Requirement Mapping Alignment**: `ChatRequest` supports explicit `jd_text` input for "JD vs Resume gap" analysis
 - **Agent Autonomy Policy**: Resume/Interview agents apply local fallback policy when resume text is missing
 - **RAG**: document loading (`.txt/.md/.csv/.pdf/.docx/.xlsx`), chunking, FAISS vector retrieval + BM25 keyword retrieval
-- **RAG Quality**: index persistence (`data/index/faiss`), metadata-aware context (page/paragraph/sheet/row), route-aware category filtering, dedicated rerank layer
+- **RAG Quality**: index persistence (`data/index/faiss`), metadata-aware context (page/paragraph/sheet/row), route-aware category filtering + no-hit fallback re-search, dedicated rerank layer
+- **RAG Score Stability**: FAISS distance is min-max normalized before hybrid fusion to improve weight tuning predictability
+- **RAG Traceability**: references include rank/source/chunk/location/snippet-style info for stronger citation-to-evidence linkage
 - **RAG Reproducibility**: tokenizer backend (`kiwi/okt/fallback`) and retrieval weights are recorded in `retriever_meta.json`
 - **Structured Output**: final response generated with Pydantic schema
 - **Route-Aware Output Policy**: synthesis applies route-specific minimum sections and skips irrelevant sections with empty arrays
@@ -70,8 +72,10 @@ Copy-Item .env.example .env
 - `AOAI_API_VERSION`
 - `MEMORY_MAX_SESSIONS` (optional, default `200`)
 - `MEMORY_TTL_SECONDS` (optional, default `86400`)
-- `MEMORY_PERSIST_ENABLED` (optional, default `true`; disable disk persistence for session memory)
-- `PII_MASK_ENABLED` (optional, default `false`; mask email/phone in session memory before storing)
+- `SESSION_MEMORY_PERSIST_ENABLED` (optional, default `true`; disable disk persistence for session memory)
+- `SESSION_MEMORY_PII_MASK` (optional, default `false`; mask email/phone in session memory before storing)
+- `UI_HISTORY_PERSIST_ENABLED` (optional, default `true`; enable/disable ui_input_history disk read/write)
+- `UI_HISTORY_PII_MASK` (optional, default `false`; mask email/phone before saving UI history)
 - `INDEX_FORCE_REBUILD` (optional, default `false`; set `true` to force rebuild FAISS/chunk cache)
 - `VECTOR_WEIGHT` (optional, default `0.6`)
 - `BM25_WEIGHT` (optional, default `0.4`)

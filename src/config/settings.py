@@ -58,8 +58,10 @@ class Settings:
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
     rag_evidence_score_threshold: float = 0.45
-    memory_persist_enabled: bool = True
-    pii_mask_enabled: bool = False
+    session_memory_persist_enabled: bool = True
+    session_memory_pii_mask_enabled: bool = False
+    ui_history_persist_enabled: bool = True
+    ui_history_pii_mask_enabled: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -87,8 +89,19 @@ def load_settings() -> Settings:
     vector_weight = _float_env("VECTOR_WEIGHT", 0.6)
     bm25_weight = _float_env("BM25_WEIGHT", 0.4)
     rag_evidence_score_threshold = _float_env("RAG_EVIDENCE_SCORE_THRESHOLD", 0.45)
-    memory_persist_enabled = _bool_env("MEMORY_PERSIST_ENABLED", True)
-    pii_mask_enabled = _bool_env("PII_MASK_ENABLED", False)
+    session_memory_persist_enabled = _bool_env(
+        "SESSION_MEMORY_PERSIST_ENABLED",
+        _bool_env("MEMORY_PERSIST_ENABLED", True),
+    )
+    session_memory_pii_mask_enabled = _bool_env(
+        "SESSION_MEMORY_PII_MASK",
+        _bool_env("PII_MASK_ENABLED", False),
+    )
+    ui_history_persist_enabled = _bool_env("UI_HISTORY_PERSIST_ENABLED", True)
+    ui_history_pii_mask_enabled = _bool_env(
+        "UI_HISTORY_PII_MASK",
+        _bool_env("PII_MASK_ENABLED", False),
+    )
 
     missing = []
     if not endpoint:
@@ -125,6 +138,8 @@ def load_settings() -> Settings:
         vector_weight=vector_weight,
         bm25_weight=bm25_weight,
         rag_evidence_score_threshold=rag_evidence_score_threshold,
-        memory_persist_enabled=memory_persist_enabled,
-        pii_mask_enabled=pii_mask_enabled,
+        session_memory_persist_enabled=session_memory_persist_enabled,
+        session_memory_pii_mask_enabled=session_memory_pii_mask_enabled,
+        ui_history_persist_enabled=ui_history_persist_enabled,
+        ui_history_pii_mask_enabled=ui_history_pii_mask_enabled,
     )

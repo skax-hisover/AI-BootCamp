@@ -7,6 +7,7 @@ CLI/FastAPI/Streamlit 통합 검증을 위한 제출용 체크리스트입니다
 - [ ] 프로젝트 루트로 이동: `D:\AI-BootCamp\final-project`
 - [ ] 의존성 설치: `pip install -r requirements-final.txt`
 - [ ] `.env`에 필수 AOAI 설정값 입력
+- [ ] (선택) 저장/개인정보 관련 변수 확인: `UI_HISTORY_PERSIST_ENABLED`, `UI_HISTORY_PII_MASK`, `SESSION_MEMORY_PERSIST_ENABLED`, `SESSION_MEMORY_PII_MASK`
 - [ ] `data/knowledge`에 최소 1개 이상의 문서가 있는지 확인
 
 샘플 `jd_text`:
@@ -109,6 +110,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "a
 
 - [ ] Streamlit 종료(`Ctrl+C`) 후 재실행
 - [ ] 사이드바 기록이 유지되는지 확인(기록 저장 옵션 ON 기준)
+- [ ] `실행 입력 기록 파일 저장 사용` OFF 시 디스크 로드/저장이 중단되고 세션 메모리만 사용하는 정책이 적용되는지 확인
 
 ## 4) 차별성 지표 자동 검증
 

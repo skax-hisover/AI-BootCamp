@@ -326,9 +326,15 @@ class HybridRetriever:
         if not docs_with_scores:
             return {}
 
-        # FAISS distance: lower is better -> convert to higher-is-better score.
+        # FAISS distance: lower is better.
+        # Apply min-max normalization on retrieved set for a more stable fusion scale.
         raw = np.array([distance for _, distance in docs_with_scores], dtype=float)
-        normalized = 1.0 / (1.0 + raw)
+        min_val = float(raw.min())
+        max_val = float(raw.max())
+        if (max_val - min_val) <= 1e-8:
+            normalized = np.ones_like(raw, dtype=float)
+        else:
+            normalized = 1.0 - ((raw - min_val) / (max_val - min_val))
         scores: dict[int, float] = {}
         for (doc, _), score in zip(docs_with_scores, normalized):
             idx = doc.metadata.get("chunk_id")

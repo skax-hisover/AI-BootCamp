@@ -136,11 +136,20 @@ def run() -> None:
     st.set_page_config(page_title="JobPilot AI", page_icon=":briefcase:", layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
     st.caption("Resume Agent + Interview Agent + RAG Agent")
+    settings = load_settings()
 
     if "session_id" not in st.session_state:
         st.session_state.session_id = f"session-{uuid4().hex[:8]}"
+    if "persist_history_enabled" not in st.session_state:
+        st.session_state.persist_history_enabled = settings.ui_history_persist_enabled
+    if "mask_pii_enabled" not in st.session_state:
+        st.session_state.mask_pii_enabled = settings.ui_history_pii_mask_enabled
     if "input_history" not in st.session_state:
-        st.session_state.input_history = _load_persisted_history()
+        st.session_state.input_history = (
+            _load_persisted_history() if st.session_state.persist_history_enabled else []
+        )
+    if "_persist_history_prev" not in st.session_state:
+        st.session_state._persist_history_prev = st.session_state.persist_history_enabled
     if "resume_text_input" not in st.session_state:
         st.session_state.resume_text_input = ""
     if "query_input" not in st.session_state:
@@ -159,10 +168,6 @@ def run() -> None:
         st.session_state.resume_target_chars = 18000
     if "max_jd_chars" not in st.session_state:
         st.session_state.max_jd_chars = DEFAULT_MAX_JD_CHARS
-    if "persist_history_enabled" not in st.session_state:
-        st.session_state.persist_history_enabled = True
-    if "mask_pii_enabled" not in st.session_state:
-        st.session_state.mask_pii_enabled = False
 
     with st.sidebar:
         st.subheader("입력 설정")
@@ -250,7 +255,7 @@ def run() -> None:
             st.checkbox(
                 "실행 입력 기록 파일 저장 사용",
                 key="persist_history_enabled",
-                help="해제 시 실행 기록은 현재 세션 메모리에만 유지되고 파일에는 저장되지 않습니다.",
+                help="해제 시 디스크 기록은 로드/저장을 모두 수행하지 않으며, 현재 세션 메모리만 사용합니다.",
             )
             st.checkbox(
                 "저장 전 이메일/전화번호 마스킹",
@@ -263,6 +268,15 @@ def run() -> None:
                     get_service()
                 st.success("인덱스 사전 준비가 완료되었습니다.")
             st.caption("첫 실행에서는 인덱스 생성으로 30~90초 이상 소요될 수 있습니다.")
+            if st.session_state.persist_history_enabled != st.session_state._persist_history_prev:
+                if st.session_state.persist_history_enabled:
+                    st.session_state.input_history = _load_persisted_history()
+                    st.success("기록 저장을 켜서 디스크 기록을 다시 로드했습니다.")
+                else:
+                    st.session_state.input_history = []
+                    st.info("기록 저장 OFF: 디스크 기록 로드/저장을 중단하고 세션 메모리만 사용합니다.")
+                st.session_state._persist_history_prev = st.session_state.persist_history_enabled
+                st.rerun()
 
     if len(st.session_state.query_input or "") > MAX_QUERY_CHARS:
         st.session_state.query_input = (st.session_state.query_input or "")[:MAX_QUERY_CHARS]

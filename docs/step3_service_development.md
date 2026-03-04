@@ -53,6 +53,10 @@ pip install -r requirements-final.txt
 - `AOAI_API_VERSION`
 - `MEMORY_MAX_SESSIONS` (선택, 기본 200)
 - `MEMORY_TTL_SECONDS` (선택, 기본 86400초)
+- `SESSION_MEMORY_PERSIST_ENABLED` (선택, 기본 true / 세션 메모리 디스크 저장 on/off)
+- `SESSION_MEMORY_PII_MASK` (선택, 기본 false / 세션 메모리 저장 전 이메일/전화 마스킹)
+- `UI_HISTORY_PERSIST_ENABLED` (선택, 기본 true / UI 실행기록 디스크 로드·저장 on/off)
+- `UI_HISTORY_PII_MASK` (선택, 기본 false / UI 실행기록 저장 전 이메일/전화 마스킹)
 - `INDEX_FORCE_REBUILD` (선택, 기본 false / true 시 인덱스 강제 재생성)
 - `VECTOR_WEIGHT` (선택, 기본 0.6 / 하이브리드 벡터 점수 가중치)
 - `BM25_WEIGHT` (선택, 기본 0.4 / 하이브리드 BM25 점수 가중치)
@@ -123,6 +127,7 @@ python scripts/run_streamlit.py
 - JD 입력 경로 추가: CLI/UI/워크플로우 전 구간에 `jd_text` 전달 및 프롬프트 반영(공고-이력서 갭 비교 명시)
 - Supervisor 라우팅 고도화: `resume_only/interview_only/full/plan_only` 분류 + LangGraph 조건부 엣지 분기 적용
 - Tool loop 가드레일 강화: 최대 N회(기본 4회) 루프 + 동일 tool+args 반복 호출 감지 시 중단 + 도구 라운드 상한 후 강제 요약 전환
+- Tool 출력 구조화: `resume_keyword_match_score`/`interview_question_bank` 결과를 JSON으로 표준화하고, Agent 프롬프트에서 1회 이상 반영 규칙을 명시
 - Plan Agent 분리: `plan_node` 추가, `full/plan_only`에서 실행해 우선순위/일정/검증 방법을 독립적으로 의사결정
 - plan_only 경로 정합성 보강: `plan_only`도 `rag_node(top_k=2 경량)`를 거쳐 근거를 확보한 뒤 Plan Agent/Synthesis로 전달
 - 세션 메모리 영속화: 메모리 JSON 파일 저장/로드로 서버 재시작 후 대화 이력 유지
@@ -134,14 +139,21 @@ python scripts/run_streamlit.py
 - 에이전트 로컬 정책 강화: 이력서 텍스트 미제공 시 Resume/Interview 노드가 갭 분석/공통 질문 중심으로 독립 전환
 - 오류 내성 강화: Resume/Interview/Synthesis structured output 실패 시 fallback 결과로 degrade 처리
 - route-aware 출력 규칙: `synthesis` 단계에서 라우트별 최소 섹션 규칙 적용(예: `plan_only`는 계획 중심, 불필요 섹션은 빈 배열)
+- 라우트 최소 개수 정렬: `resume_only/interview_only`는 `two_week_plan` 최소 개수를 0으로 조정해 기획 시나리오(플랜 제외)와 일치
+- Synthesis 안정화: 규칙을 필수/권장으로 분리하고, 최소 개수/빈 배열/citation 보정은 코드 후처리에서 강제
+- 요약 정책 통일: `plan_only` 포함 모든 라우트에서 `summary`는 항상 제공(계획 전용 라우트는 1~2문장 요약)
+- 카테고리 필터 보완: route-aware 필터에 `uncategorized`를 허용해 루트 문서 데이터도 검색 누락 없이 반영
 - citation 강제: 최종 액션 불릿에 `[1][2]` 형태의 근거 번호 표기를 프롬프트 수준에서 요구
 - RAG 인덱스 영속화: `FAISS.save_local/load_local` + 청크/시그니처 메타 저장으로 재시작 시 인덱스 재사용
 - 인덱스 무효화 안정성 강화: corpus signature에 파일 fingerprint 반영 + `INDEX_FORCE_REBUILD` 옵션 지원
 - 검색 품질 보강: 길이 페널티 리랭킹, 동일 파일 청크 수 제한(다양성), 카테고리 필터 파라미터 지원
+- 필터 내구성 보강: route-aware category filter 결과가 비는 경우 무필터 재검색 fallback으로 근거 회수율 개선
 - 메타데이터 강화: PDF 페이지 번호, DOCX 문단 번호, XLSX 시트/행 정보를 컨텍스트 및 refs에 노출
+- references 추적성 강화: rank/source/location/chunk_id/snippet 정보를 포함한 문자열 포맷으로 citation 연결성 향상
 - 한국어 BM25 개선: kiwi/konlpy 형태소 분석 옵션(설치 시 자동 활용), 미설치 시 조사 제거 기반 fallback 토크나이저 사용
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
 - RAG 안전정책 코드 반영: 최고 점수가 `RAG_EVIDENCE_SCORE_THRESHOLD` 미만이면 근거 부족 모드로 전환해 보수적 표현을 우선
+- 벡터 점수 정규화 안정화: FAISS distance를 retrieval set 기준 min-max 정규화 후 BM25와 결합해 가중치 튜닝 예측 가능성 향상
 - Streamlit 오류 가이드 보강: 지식문서 미존재/환경변수 누락 시 사용자 안내 메시지 및 해결 가이드 표시
 - 멀티유저 방어 로직: SessionMemory에 TTL/최대 세션 수 제한 추가(메모리 누적 방지)
 - 대용량 입력 방어: Streamlit에서 질문/이력서 입력란 내부 실시간 카운터(`max_chars`) + 하드 제한 및 긴 이력서 자동 압축(앞/뒤 중심) 옵션 제공

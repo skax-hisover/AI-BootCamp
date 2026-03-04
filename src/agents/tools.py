@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 
 from langchain_core.tools import tool
@@ -27,7 +28,14 @@ def resume_keyword_match_score(resume_text: str, target_role: str) -> str:
     keywords = role_keywords[key]
     matched = [kw for kw in keywords if kw.lower() in tokens]
     score = int((len(matched) / max(len(keywords), 1)) * 100)
-    return f"target_role={target_role}, match_score={score}, matched_keywords={matched}"
+    payload = {
+        "target_role": target_role,
+        "role_key": key,
+        "match_score": score,
+        "matched_keywords": matched,
+        "missing_keywords": [kw for kw in keywords if kw not in matched],
+    }
+    return json.dumps(payload, ensure_ascii=False)
 
 
 @tool
@@ -56,4 +64,9 @@ def interview_question_bank(target_role: str) -> str:
         key = "데이터"
     elif "pm" in lowered:
         key = "pm"
-    return "\n".join(f"- {q}" for q in mapping[key])
+    payload = {
+        "target_role": target_role,
+        "role_key": key,
+        "questions": mapping[key],
+    }
+    return json.dumps(payload, ensure_ascii=False)
