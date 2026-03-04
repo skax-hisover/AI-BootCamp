@@ -1,15 +1,15 @@
-# E2E Test Checklist (with sample jd_text)
+# E2E 테스트 체크리스트 (샘플 `jd_text` 포함)
 
-Submit-ready checklist for CLI/FastAPI/Streamlit end-to-end verification.
+CLI/FastAPI/Streamlit 통합 검증을 위한 제출용 체크리스트입니다.
 
-## 0) Prerequisites
+## 0) 사전 준비
 
-- [ ] Move to project root: `D:\AI-BootCamp\final-project`
-- [ ] Install dependencies: `pip install -r requirements-final.txt`
-- [ ] Configure `.env` with required AOAI keys
-- [ ] Ensure at least one document exists in `data/knowledge`
+- [ ] 프로젝트 루트로 이동: `D:\AI-BootCamp\final-project`
+- [ ] 의존성 설치: `pip install -r requirements-final.txt`
+- [ ] `.env`에 필수 AOAI 설정값 입력
+- [ ] `data/knowledge`에 최소 1개 이상의 문서가 있는지 확인
 
-Sample `jd_text`:
+샘플 `jd_text`:
 
 ```text
 백엔드 개발자 채용 공고
@@ -20,7 +20,7 @@ Sample `jd_text`:
 - 협업 커뮤니케이션 및 문서화 역량
 ```
 
-Sample `resume_text`:
+샘플 `resume_text`:
 
 ```text
 Python과 FastAPI로 사내 API를 개발/운영했습니다.
@@ -30,35 +30,35 @@ MySQL 사용 경험이 있으며 AWS EC2 배포 경험이 있습니다.
 
 ## 1) CLI E2E
 
-### 1-1. Run with JD + resume
+### 1-1. JD + 이력서 동시 실행
 
-- [ ] Run:
+- [ ] 실행:
 
 ```powershell
 python main.py --session-id "cli-e2e-1" --target-role "백엔드 개발자" --query "공고와 이력서의 갭을 분석하고, 이력서 개선 5개와 2주 계획을 작성해줘." --jd-text "백엔드 개발자 채용 공고 - Python/FastAPI, DB 튜닝, 장애 대응, Docker/AWS, 협업 문서화" --resume-text "FastAPI API 개발 2년, MySQL 사용, AWS 배포 경험"
 ```
 
-- [ ] Validate:
-  - [ ] JSON response returned
-  - [ ] Keys exist: `summary`, `resume_improvements`, `interview_preparation`, `two_week_plan`, `references`
-  - [ ] `references` includes at least 1 item
-  - [ ] `two_week_plan` includes at least 4 items
+- [ ] 검증:
+  - [ ] JSON 응답이 반환된다.
+  - [ ] `summary`, `resume_improvements`, `interview_preparation`, `two_week_plan`, `references` 키가 존재한다.
+  - [ ] `references`가 1개 이상 포함된다.
+  - [ ] `two_week_plan`이 4개 이상 포함된다.
 
-### 1-2. Route tendency check
+### 1-2. 라우팅 성향 확인
 
-- [ ] Run a resume-focused query (exclude interview explicitly)
-- [ ] Confirm response is resume-improvement focused
+- [ ] 이력서 중심 질의(면접 제외 명시)로 실행한다.
+- [ ] 응답이 이력서 개선 중심으로 출력되는지 확인한다.
 
 ## 2) FastAPI E2E
 
-### 2-1. Start server
+### 2-1. 서버 실행
 
-- [ ] Run: `python scripts/run_api.py`
-- [ ] Confirm health endpoint is reachable: `http://127.0.0.1:8000/health`
+- [ ] 실행: `python scripts/run_api.py`
+- [ ] 헬스체크 확인: `http://127.0.0.1:8000/health`
 
-### 2-2. Call `/chat` with `jd_text`
+### 2-2. `jd_text` 포함 `/chat` 호출
 
-- [ ] Run:
+- [ ] 실행:
 
 ```powershell
 $body = @{
@@ -72,60 +72,62 @@ $body = @{
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "application/json; charset=utf-8" -Body $body
 ```
 
-- [ ] Validate:
-  - [ ] HTTP 200
-  - [ ] Required fields present
-  - [ ] Korean response
-  - [ ] `references` present
+- [ ] 검증:
+  - [ ] HTTP 200 응답
+  - [ ] 필수 응답 필드 존재
+  - [ ] 한국어 응답
+  - [ ] `references` 포함
 
-### 2-3. Error handling (optional)
+### 2-3. 에러 처리 확인(선택)
 
-- [ ] Confirm 400/500 guidance messages are clear for invalid config/input
+- [ ] 설정/입력 오류 시 400/500 안내 메시지가 명확한지 확인한다.
 
 ## 3) Streamlit E2E
 
-### 3-1. Start UI
+### 3-1. UI 실행
 
-- [ ] Run: `python scripts/run_streamlit.py`
-- [ ] Open: `http://localhost:8501`
+- [ ] 실행: `python scripts/run_streamlit.py`
+- [ ] 접속: `http://localhost:8501`
 
-### 3-2. Input/run scenario with JD
+### 3-2. JD 포함 입력/실행 시나리오
 
-- [ ] Enter query and choose target role
-- [ ] Fill `JD/공고 텍스트(선택)` (or upload JD file)
-- [ ] Fill `이력서 텍스트(선택)` (or upload resume file)
-- [ ] Click `에이전트 실행`
+- [ ] 질문 입력 및 목표 직무 선택
+- [ ] `JD/공고 텍스트(선택)` 입력(또는 JD 파일 업로드)
+- [ ] `이력서 텍스트(선택)` 입력(또는 이력서 파일 업로드)
+- [ ] `에이전트 실행` 클릭
 
-- [ ] Validate:
-  - [ ] Result cards rendered (summary/resume/interview/plan/references)
-  - [ ] Input history stores run
-  - [ ] `다시 불러오기` restores query/role/JD/resume/result
-  - [ ] `새 대화 시작` resets state with new session
-  - [ ] `max_chars` counters work in input boxes
+- [ ] 검증:
+  - [ ] 결과 카드(요약/이력서/면접/계획/출처) 렌더링
+  - [ ] 실행 입력 기록 저장
+  - [ ] `다시 불러오기` 시 질문/직무/JD/이력서/결과 복원
+  - [ ] `새 대화 시작` 시 새 세션으로 초기화
+  - [ ] 입력창 `max_chars` 카운터 정상 동작
+  - [ ] (선택) `인덱스 사전 빌드/로드` 버튼 정상 동작
+  - [ ] (선택) 기록 저장 OFF/PII 마스킹 옵션 동작 확인
 
-### 3-3. Persistence across restart
+### 3-3. 재시작 후 기록 유지 확인
 
-- [ ] Stop Streamlit (`Ctrl+C`) and run again
-- [ ] Confirm sidebar history is still available
+- [ ] Streamlit 종료(`Ctrl+C`) 후 재실행
+- [ ] 사이드바 기록이 유지되는지 확인(기록 저장 옵션 ON 기준)
 
-## 4) Differentiation Metrics Automation
+## 4) 차별성 지표 자동 검증
 
-- [ ] Run:
+- [ ] 실행:
 
 ```powershell
 python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
 ```
 
-- [ ] Validate:
-  - [ ] Routing accuracy printed
-  - [ ] Reference inclusion rate printed
-  - [ ] Plan quality rate printed
-  - [ ] `[PASS] All thresholds satisfied.` printed when thresholds are met
+- [ ] 검증:
+  - [ ] 라우팅 정확도 출력
+  - [ ] 근거 포함률 출력
+  - [ ] 플랜 품질률 출력
+  - [ ] 임계치 충족 시 `[PASS] All thresholds satisfied.` 출력
 
-## 5) Submission Artifacts
+## 5) 제출 산출물 점검
 
-- [ ] `docs/evidence/agent_execution_log.md` updated
-- [ ] `docs/evidence/agent_final_answer.json` updated
-- [ ] Streamlit screenshot prepared: `docs/evidence/streamlit_main_capture.png`
-- [ ] (Optional) Attach metrics run output capture
+- [ ] `docs/evidence/agent_execution_log.md` 최신화
+- [ ] `docs/evidence/agent_final_answer.json` 최신화
+- [ ] Streamlit 캡처 준비: `docs/evidence/streamlit_main_capture.png`
+- [ ] (선택) 지표 자동검증 실행 결과 캡처 첨부
 
