@@ -184,6 +184,32 @@ def _normalize_weights(vector_weight: float, bm25_weight: float) -> tuple[float,
     return vw / total, bw / total
 
 
+def _category_diagnostics(chunks: list[Document]) -> dict[str, Any]:
+    required_categories = {"job_postings", "jd", "interview_guides", "portfolio_examples"}
+    distribution: dict[str, int] = {}
+    for chunk in chunks:
+        category = str(chunk.metadata.get("category", "uncategorized")).strip().lower() or "uncategorized"
+        distribution[category] = distribution.get(category, 0) + 1
+
+    total = sum(distribution.values())
+    uncategorized_count = distribution.get("uncategorized", 0)
+    uncategorized_ratio = round((uncategorized_count / total), 4) if total else 0.0
+    present_required = sorted([category for category in required_categories if category in distribution])
+    missing_required = sorted(required_categories - set(distribution.keys()))
+    warning = (
+        "uncategorized_ratio_high"
+        if uncategorized_ratio >= 0.5
+        else ("missing_required_categories" if missing_required else "")
+    )
+    return {
+        "category_distribution": distribution,
+        "uncategorized_ratio": uncategorized_ratio,
+        "present_required_categories": present_required,
+        "missing_required_categories": missing_required,
+        "category_quality_warning": warning or None,
+    }
+
+
 @dataclass
 class SearchHit:
     content: str
@@ -260,6 +286,13 @@ class HybridRetriever:
         if chunks is not None and vector_db is not None:
             tokenized_chunks = [_tokenize(doc.page_content) for doc in chunks]
             bm25 = BM25Okapi(tokenized_chunks)
+            diagnostics = _category_diagnostics(chunks)
+            if diagnostics.get("category_quality_warning"):
+                print(
+                    "[WARN] Knowledge category quality issue:",
+                    diagnostics.get("category_quality_warning"),
+                    diagnostics.get("category_distribution"),
+                )
             return cls(
                 chunks=chunks,
                 vector_db=vector_db,
@@ -290,6 +323,13 @@ class HybridRetriever:
             {"page_content": chunk.page_content, "metadata": chunk.metadata} for chunk in chunks
         ]
         chunks_path.write_text(json.dumps(chunks_payload, ensure_ascii=False), encoding="utf-8")
+        diagnostics = _category_diagnostics(chunks)
+        if diagnostics.get("category_quality_warning"):
+            print(
+                "[WARN] Knowledge category quality issue:",
+                diagnostics.get("category_quality_warning"),
+                diagnostics.get("category_distribution"),
+            )
         meta_path.write_text(
             json.dumps(
                 {
@@ -303,6 +343,7 @@ class HybridRetriever:
                         settings.bm25_weight,
                     )[1],
                     "tokenizer_backend": tokenizer_backend,
+                    **diagnostics,
                 },
                 ensure_ascii=False,
                 indent=2,

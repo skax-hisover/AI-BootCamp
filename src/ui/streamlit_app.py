@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
+from filelock import FileLock
 
 from src.common import JobPilotError
 from src.config import load_settings
@@ -30,12 +31,19 @@ def _history_file_path() -> Path:
     return settings.index_dir / "ui_input_history.json"
 
 
+def _history_lock_path() -> Path:
+    settings = load_settings()
+    return settings.index_dir / "ui_input_history.json.lock"
+
+
 def _load_persisted_history() -> list[dict]:
     path = _history_file_path()
+    lock = FileLock(str(_history_lock_path()))
     if not path.exists():
         return []
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        with lock:
+            raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
     return raw if isinstance(raw, list) else []
@@ -43,8 +51,10 @@ def _load_persisted_history() -> list[dict]:
 
 def _save_persisted_history(history: list[dict]) -> None:
     path = _history_file_path()
+    lock = FileLock(str(_history_lock_path()))
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+    with lock:
+        path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _show_error_by_code(error_code: str, detail: str) -> None:
@@ -168,6 +178,8 @@ def run() -> None:
         st.session_state.resume_target_chars = 18000
     if "max_jd_chars" not in st.session_state:
         st.session_state.max_jd_chars = DEFAULT_MAX_JD_CHARS
+    if "show_debug_meta" not in st.session_state:
+        st.session_state.show_debug_meta = False
 
     with st.sidebar:
         st.subheader("입력 설정")
@@ -268,6 +280,12 @@ def run() -> None:
                     get_service()
                 st.success("인덱스 사전 준비가 완료되었습니다.")
             st.caption("첫 실행에서는 인덱스 생성으로 30~90초 이상 소요될 수 있습니다.")
+        with st.expander("디버그/신뢰도 표시", expanded=False):
+            st.checkbox(
+                "라우팅 근거/근거 신뢰도 메타 표시",
+                key="show_debug_meta",
+                help="출력 하단에 route, routing_reason, rag_low_confidence 정보를 표시합니다.",
+            )
             if st.session_state.persist_history_enabled != st.session_state._persist_history_prev:
                 if st.session_state.persist_history_enabled:
                     st.session_state.input_history = _load_persisted_history()
@@ -436,6 +454,7 @@ def run() -> None:
 
     if st.session_state.last_response:
         latest = st.session_state.last_response
+        route = str(latest.get("route", "")).lower()
         st.success("분석 완료")
         st.subheader("요약")
         st.write(latest["summary"])
@@ -453,18 +472,31 @@ def run() -> None:
                 st.subheader("면접 준비")
                 for item in interview_items:
                     st.markdown(f"- {item}")
+            elif route in {"resume_only", "plan_only"}:
+                st.caption("요청 라우트에 따라 면접 준비 섹션은 생략되었습니다.")
 
         plan_items = latest.get("two_week_plan", []) or []
         if plan_items:
             st.subheader("2주 실행 계획")
             for item in plan_items:
                 st.markdown(f"- {item}")
+        elif route in {"resume_only", "interview_only"}:
+            st.caption("요청 라우트에 따라 2주 실행 계획 섹션은 생략되었습니다.")
+
+        if (not (latest.get("resume_improvements", []) or [])) and route in {"interview_only", "plan_only"}:
+            st.caption("요청 라우트에 따라 이력서 개선 섹션은 생략되었습니다.")
 
         references = latest.get("references", []) or []
         if references:
             st.subheader("참고 출처")
             for item in references:
                 st.markdown(f"- {item}")
+        if st.session_state.show_debug_meta:
+            with st.expander("라우팅/신뢰도 메타", expanded=False):
+                st.write(f"- route: `{latest.get('route', 'n/a')}`")
+                st.write(f"- routing_reason: {latest.get('routing_reason', 'n/a')}")
+                st.write(f"- rag_low_confidence: `{latest.get('rag_low_confidence', 'n/a')}`")
+                st.write(f"- cached_state_hit: `{latest.get('cached_state_hit', False)}`")
 
 
 if __name__ == "__main__":

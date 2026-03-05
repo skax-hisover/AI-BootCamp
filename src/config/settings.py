@@ -58,6 +58,8 @@ class Settings:
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
     rag_evidence_score_threshold: float = 0.45
+    rerank_enabled: bool = True
+    rerank_provider: str = "heuristic"
     session_memory_persist_enabled: bool = True
     session_memory_pii_mask_enabled: bool = False
     ui_history_persist_enabled: bool = True
@@ -89,6 +91,8 @@ def load_settings() -> Settings:
     vector_weight = _float_env("VECTOR_WEIGHT", 0.6)
     bm25_weight = _float_env("BM25_WEIGHT", 0.4)
     rag_evidence_score_threshold = _float_env("RAG_EVIDENCE_SCORE_THRESHOLD", 0.45)
+    rerank_enabled = _bool_env("RERANK_ENABLED", True)
+    rerank_provider = (os.getenv("RERANK_PROVIDER") or "heuristic").strip().lower() or "heuristic"
     session_memory_persist_enabled = _bool_env(
         "SESSION_MEMORY_PERSIST_ENABLED",
         _bool_env("MEMORY_PERSIST_ENABLED", True),
@@ -138,6 +142,8 @@ def load_settings() -> Settings:
         vector_weight=vector_weight,
         bm25_weight=bm25_weight,
         rag_evidence_score_threshold=rag_evidence_score_threshold,
+        rerank_enabled=rerank_enabled,
+        rerank_provider=rerank_provider,
         session_memory_persist_enabled=session_memory_persist_enabled,
         session_memory_pii_mask_enabled=session_memory_pii_mask_enabled,
         ui_history_persist_enabled=ui_history_persist_enabled,

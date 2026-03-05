@@ -20,3 +20,7 @@ class ChatResponse(BaseModel):
     interview_preparation: list[str] = Field(default_factory=list)
     two_week_plan: list[str] = Field(default_factory=list)
     references: list[str] = Field(default_factory=list)
+    route: str | None = None
+    routing_reason: str | None = None
+    rag_low_confidence: bool | None = None
+    cached_state_hit: bool = False

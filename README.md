@@ -18,6 +18,9 @@ JobPilot AI is an end-to-end multi-agent service for job preparation and career 
 - **Resilient Structured Output**: node-level degrade fallback for Resume/Interview/Synthesis parsing failures
 - **Evidence Traceability**: Resume/Interview notes include `evidence_map` and final bullets require citation style (`[1][2]`)
 - **Graph Checkpointing**: LangGraph checkpointer wired with `thread_id=session_id` for execution-state restoration baseline
+- **Graph State Reuse Cache**: file-backed invoke cache (`graph_state_cache.json` + lock) reuses prior final state for identical requests across restarts
+- **JD-Resume Gap Tooling**: added `jd_resume_gap_score` (required/preferred keyword match rate + missing top-N) and wired into Resume Agent tool loop
+- **Optional Reliability Metadata**: `ChatResponse` includes `route/routing_reason/rag_low_confidence/cached_state_hit`, and Streamlit can display it via debug toggle
 - **Concurrency Guard**: SessionMemory read/write sections protected with file lock (`session_memory.json.lock`)
 - **Service Packaging**: FastAPI backend and Streamlit UI
 - **Resilience**: API-level exception handling for user-friendly error responses
@@ -80,6 +83,8 @@ Copy-Item .env.example .env
 - `VECTOR_WEIGHT` (optional, default `0.6`)
 - `BM25_WEIGHT` (optional, default `0.4`)
 - `RAG_EVIDENCE_SCORE_THRESHOLD` (optional, default `0.45`; low-confidence mode threshold)
+- `RERANK_ENABLED` (optional, default `true`; enable/disable dedicated rerank layer)
+- `RERANK_PROVIDER` (optional, default `heuristic`; `heuristic|cross_encoder|llm`, currently `cross_encoder/llm` fallback to heuristic)
 
 ## Quick Start (Deploy View)
 
@@ -93,6 +98,12 @@ Copy-Item .env.example .env
   - `data/knowledge/interview_guides/`
   - `data/knowledge/portfolio_examples/`
 - 지원 포맷: `.txt/.md/.csv/.pdf/.docx/.xlsx`
+
+### Knowledge Minimum Checklist
+
+- [ ] 카테고리별 최소 1개 문서 확보: `job_postings/`, `jd/`, `interview_guides/`, `portfolio_examples/`
+- [ ] 문서 최신성 기준: 수집/수정 기준 3개월 이내 문서 우선, 오래된 문서는 라벨링 또는 교체
+- [ ] 금지 콘텐츠 제외: 개인정보 원문(주민번호/연락처), 저작권 위반 원문 전문, 근거 불명확 루머/홍보성 자료
 
 3) 실행  
 - API: `python scripts/run_api.py`  
@@ -144,6 +155,7 @@ python scripts/run_streamlit.py
 - API returns `400` or `500` on `/chat`
   - `400`: input/config issues (e.g., missing env variables)
   - `500`: runtime/model/retrieval issues; check terminal error details
+  - Error contract example (top-level): `{"error_code":"CONFIG_MISSING_ENV","detail":"Missing environment variables: AOAI_ENDPOINT"}`
 - Structured output parse instability (intermittent)
   - Workflow has fallback degrade responses in Resume/Interview/Synthesis nodes.
   - Verify model/deployment health and keep prompts in Korean-only mode for consistency.

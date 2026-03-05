@@ -42,6 +42,11 @@ def _load_cases(path: Path) -> list[dict]:
     return [item for item in raw if isinstance(item, dict)]
 
 
+def _requires_plan(route: str) -> bool:
+    route_key = (route or "").strip().lower()
+    return route_key in {"full", "plan_only"}
+
+
 def main() -> None:
     args = parse_args()
     cases_path = Path(args.cases)
@@ -51,7 +56,8 @@ def main() -> None:
     service = JobPilotService()
     cases = _load_cases(cases_path)
     routing_samples: list[RoutingSampleResult] = []
-    quality_samples: list[AnswerQualitySample] = []
+    reference_samples: list[AnswerQualitySample] = []
+    plan_quality_samples: list[AnswerQualitySample] = []
 
     details: list[dict] = []
     for i, case in enumerate(cases, start=1):
@@ -75,29 +81,32 @@ def main() -> None:
 
         predicted_route = str(result.get("route", "unknown"))
         expected_route = str(case.get("expected_route", ""))
+        eval_route = (expected_route or predicted_route).strip().lower()
         if expected_route:
             routing_samples.append(
                 RoutingSampleResult(expected_route=expected_route, predicted_route=predicted_route)
             )
-        quality_samples.append(
-            AnswerQualitySample(
-                references=[str(item) for item in references],
-                two_week_plan=[str(item) for item in two_week_plan],
-            )
+        sample = AnswerQualitySample(
+            references=[str(item) for item in references],
+            two_week_plan=[str(item) for item in two_week_plan],
         )
+        reference_samples.append(sample)
+        if _requires_plan(eval_route):
+            plan_quality_samples.append(sample)
         details.append(
             {
                 "query": state["user_query"],
                 "expected_route": expected_route,
                 "predicted_route": predicted_route,
+                "eval_route": eval_route,
                 "references_count": len(references),
                 "plan_items_count": len(two_week_plan),
             }
         )
 
     routing = routing_accuracy(routing_samples) if routing_samples else 0.0
-    ref_rate = reference_inclusion_rate(quality_samples)
-    plan_rate = plan_quality_rate(quality_samples)
+    ref_rate = reference_inclusion_rate(reference_samples)
+    plan_rate = plan_quality_rate(plan_quality_samples)
 
     print("=== Differentiation Metrics ===")
     print(f"Cases: {len(cases)}")
@@ -106,7 +115,7 @@ def main() -> None:
     else:
         print("Routing accuracy: n/a (expected_route not provided)")
     print(f"Reference inclusion rate: {ref_rate:.2%}")
-    print(f"Plan quality rate: {plan_rate:.2%}")
+    print(f"Plan quality rate (full/plan_only): {plan_rate:.2%}")
     print("\n=== Case Details ===")
     for item in details:
         print(json.dumps(item, ensure_ascii=False))

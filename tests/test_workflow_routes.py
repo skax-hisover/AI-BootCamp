@@ -26,6 +26,19 @@ def test_normalize_final_answer_by_route_blanks_irrelevant_sections() -> None:
     assert normalized["two_week_plan"] == ["p1"]
 
 
+def test_plan_only_summary_is_clipped_to_one_or_two_sentences() -> None:
+    payload = {
+        "summary": "첫 문장입니다. 두 번째 문장입니다. 세 번째 문장은 잘려야 합니다.",
+        "resume_improvements": [],
+        "interview_preparation": [],
+        "two_week_plan": ["p1"],
+        "references": [],
+    }
+    normalized = normalize_final_answer_by_route("plan_only", payload)
+    assert "세 번째 문장" not in normalized["summary"]
+    assert normalized["summary"].count(".") <= 2
+
+
 def test_enforce_final_answer_policy_adds_refs_and_citation() -> None:
     payload = {
         "summary": "요약",

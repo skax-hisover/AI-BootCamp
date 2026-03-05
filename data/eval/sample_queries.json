@@ -19,6 +19,13 @@
     "resume_text": "신규 기능 런칭, KPI 모니터링, 유관부서 협업 경험",
     "jd_text": "PM 채용: 우선순위 결정, 실험 설계, 이해관계자 조율, 로드맵 관리",
     "expected_route": "full"
+  },
+  {
+    "query": "전체 요약 없이 2주 실행계획만 간단히 작성해줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "",
+    "jd_text": "백엔드 개발자 채용: Python, FastAPI, DB 튜닝, 장애 대응",
+    "expected_route": "plan_only"
   }
 ]
 

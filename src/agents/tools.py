@@ -8,13 +8,16 @@ import re
 from langchain_core.tools import tool
 
 
-@tool
-def resume_keyword_match_score(resume_text: str, target_role: str) -> str:
-    """Estimate keyword match score of a resume for a target role."""
-    role_keywords = {
+def _infer_role_keywords(target_role: str) -> tuple[str, list[str], list[str]]:
+    role_required = {
         "백엔드": ["python", "api", "database", "sql", "cloud", "docker", "fastapi", "django"],
-        "데이터": ["pandas", "sql", "분석", "시각화", "모델", "통계", "etl"],
+        "데이터": ["sql", "python", "분석", "통계", "모델", "시각화", "etl"],
         "pm": ["우선순위", "협업", "지표", "로드맵", "의사결정", "커뮤니케이션"],
+    }
+    role_preferred = {
+        "백엔드": ["kafka", "redis", "msa", "모니터링", "테스트 자동화"],
+        "데이터": ["실험", "a/b", "대시보드", "데이터 파이프라인", "가설 검증"],
+        "pm": ["가설", "실험", "백로그", "이해관계자", "리스크 관리"],
     }
 
     key = "백엔드"
@@ -23,17 +26,22 @@ def resume_keyword_match_score(resume_text: str, target_role: str) -> str:
         key = "데이터"
     elif "pm" in lowered:
         key = "pm"
+    return key, role_required[key], role_preferred[key]
 
+
+@tool
+def resume_keyword_match_score(resume_text: str, target_role: str) -> str:
+    """Estimate keyword match score of a resume for a target role."""
+    key, role_keywords, _ = _infer_role_keywords(target_role)
     tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", resume_text.lower()))
-    keywords = role_keywords[key]
-    matched = [kw for kw in keywords if kw.lower() in tokens]
-    score = int((len(matched) / max(len(keywords), 1)) * 100)
+    matched = [kw for kw in role_keywords if kw.lower() in tokens]
+    score = int((len(matched) / max(len(role_keywords), 1)) * 100)
     payload = {
         "target_role": target_role,
         "role_key": key,
         "match_score": score,
         "matched_keywords": matched,
-        "missing_keywords": [kw for kw in keywords if kw not in matched],
+        "missing_keywords": [kw for kw in role_keywords if kw not in matched],
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -68,5 +76,43 @@ def interview_question_bank(target_role: str) -> str:
         "target_role": target_role,
         "role_key": key,
         "questions": mapping[key],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@tool
+def jd_resume_gap_score(jd_text: str, resume_text: str, target_role: str) -> str:
+    """Quantify JD-Resume gap with required/preferred keyword matching."""
+    _, required_keywords, preferred_keywords = _infer_role_keywords(target_role)
+    jd_tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", jd_text.lower()))
+    resume_tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", resume_text.lower()))
+
+    jd_required = [kw for kw in required_keywords if kw.lower() in jd_tokens] or required_keywords
+    jd_preferred = [kw for kw in preferred_keywords if kw.lower() in jd_tokens]
+
+    matched_required = [kw for kw in jd_required if kw.lower() in resume_tokens]
+    missing_required = [kw for kw in jd_required if kw.lower() not in resume_tokens]
+    matched_preferred = [kw for kw in jd_preferred if kw.lower() in resume_tokens]
+    missing_preferred = [kw for kw in jd_preferred if kw.lower() not in resume_tokens]
+
+    required_match_rate = round(
+        (len(matched_required) / max(len(jd_required), 1)) * 100.0,
+        2,
+    )
+    preferred_match_rate = round(
+        (len(matched_preferred) / max(len(jd_preferred), 1)) * 100.0,
+        2,
+    ) if jd_preferred else 0.0
+
+    payload = {
+        "target_role": target_role,
+        "jd_required_keywords": jd_required,
+        "jd_preferred_keywords": jd_preferred,
+        "matched_required_keywords": matched_required,
+        "missing_required_top": missing_required[:5],
+        "matched_preferred_keywords": matched_preferred,
+        "missing_preferred_top": missing_preferred[:5],
+        "required_match_rate": required_match_rate,
+        "preferred_match_rate": preferred_match_rate,
     }
     return json.dumps(payload, ensure_ascii=False)

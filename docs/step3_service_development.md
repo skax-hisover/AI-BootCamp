@@ -61,6 +61,10 @@ pip install -r requirements-final.txt
 - `VECTOR_WEIGHT` (선택, 기본 0.6 / 하이브리드 벡터 점수 가중치)
 - `BM25_WEIGHT` (선택, 기본 0.4 / 하이브리드 BM25 점수 가중치)
 - `RAG_EVIDENCE_SCORE_THRESHOLD` (선택, 기본 0.45 / 상위 점수 임계치 미만 시 근거 부족 모드 전환)
+- `RERANK_ENABLED` (선택, 기본 true / 리랭커 사용 on/off)
+- `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`)
+- `RERANK_ENABLED` (선택, 기본 true / 리랭크 레이어 사용 on/off)
+- `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 
 ### CLI 실행
 
@@ -154,8 +158,19 @@ python scripts/run_streamlit.py
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
 - RAG 안전정책 코드 반영: 최고 점수가 `RAG_EVIDENCE_SCORE_THRESHOLD` 미만이면 근거 부족 모드로 전환해 보수적 표현을 우선
 - 벡터 점수 정규화 안정화: FAISS distance를 retrieval set 기준 min-max 정규화 후 BM25와 결합해 가중치 튜닝 예측 가능성 향상
+- 카테고리 품질 진단 추가: `HybridRetriever.build()`에서 카테고리 분포와 `uncategorized` 비율을 점검하고, 비중 과다 시 경고를 출력하며 `retriever_meta.json`에 진단 결과 기록
+- 리랭크 확장성 분리: 휴리스틱 리랭커를 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정 기반 on/off·전략 전환 포인트 제공
+- 업로드 입력 근거 강화: `rag_node`에서 `jd_text/resume_text`를 임시 청크로 생성해 검색 후보에 혼합(ephemeral evidence)하여 공고-이력서 갭 분석의 직접 근거성을 보강
+- 체크포인터 실효성 보강: `MemorySaver`와 별개로 `graph_state_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
+- 도구 도메인 특화 강화: `jd_resume_gap_score` 도구를 추가해 JD 필수/우대 키워드 매칭률과 누락 역량 top-N을 Resume Agent가 정량 근거로 반영
+- 디버그 신뢰도 노출 확장: `ChatResponse`에 `route`, `routing_reason`, `rag_low_confidence`, `cached_state_hit` 옵션 필드를 추가하고 Streamlit에서 선택적으로 표시
+- API 에러 계약 단순화: FastAPI `exception_handler`로 `JobPilotError`를 최상위 `{error_code, detail}` 형태로 직렬화해 클라이언트 파싱 복잡도 완화
+- UI route-aware 안내 보강: 비활성 섹션을 숨기는 대신 라우트별 생략 안내 문구(예: resume_only에서 면접/플랜 생략)를 조건부 표시
+- 동시성 범위 확장: `ui_input_history.json` 로드/저장에도 파일 락(`ui_input_history.json.lock`)을 적용해 멀티세션 경합 내구성 강화
 - Streamlit 오류 가이드 보강: 지식문서 미존재/환경변수 누락 시 사용자 안내 메시지 및 해결 가이드 표시
 - 멀티유저 방어 로직: SessionMemory에 TTL/최대 세션 수 제한 추가(메모리 누적 방지)
 - 대용량 입력 방어: Streamlit에서 질문/이력서 입력란 내부 실시간 카운터(`max_chars`) + 하드 제한 및 긴 이력서 자동 압축(앞/뒤 중심) 옵션 제공
 - 파일 경합 완화: `SessionMemory` 저장/조회 경로에 파일 락 적용(`session_memory.json.lock`)
 - 실행 재현성 강화: `requirements-final.txt` 핵심 의존성 버전 고정 및 `.env.example` 제공
+- 도구 반영 검증 강화: `resume_node/interview_node`에서 ToolMessage(JSON) 반영 여부를 키워드/질문 기준으로 점검하고, 미반영 시 검증 피드백을 포함해 1회 재시도하도록 보완
+- `plan_only` 요약 가독성 강화: `normalize_final_answer_by_route()` 후처리에서 summary를 1~2문장(과도 길이 시 절단)으로 강제해 UI 카드 길이 편차를 안정화

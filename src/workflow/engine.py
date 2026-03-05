@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
+from pathlib import Path
 from typing import Any, Literal, TypeVar
 
+from filelock import FileLock
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
@@ -13,10 +17,10 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
 from src.agents.schemas import FinalAnswer, InterviewNotes, PlanNotes, ResumeNotes
-from src.agents.tools import interview_question_bank, resume_keyword_match_score
+from src.agents.tools import interview_question_bank, jd_resume_gap_score, resume_keyword_match_score
 from src.common import JobPilotError
 from src.config import get_chat_model, load_settings
-from src.retrieval import HybridRetriever, SearchHit
+from src.retrieval import HybridRetriever, SearchHit, rerank_hits
 from src.utils.memory import SessionMemory
 from src.workflow.contracts import ChatRequest, ChatResponse
 
@@ -83,6 +87,32 @@ def route_minimums(route: str) -> dict[str, int]:
     }
 
 
+def _split_summary_sentences(text: str) -> list[str]:
+    normalized = " ".join(str(text or "").split()).strip()
+    if not normalized:
+        return []
+    sentences = [chunk.strip() for chunk in re.split(r"(?<=[.!?])\s+", normalized) if chunk.strip()]
+    if len(sentences) <= 1:
+        sentences = [
+            chunk.strip()
+            for chunk in re.split(r"(?<=다\.)\s+|(?<=요\.)\s+", normalized)
+            if chunk.strip()
+        ]
+    return sentences or [normalized]
+
+
+def _enforce_plan_only_summary(summary: str, max_chars: int = 140) -> str:
+    base = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
+    normalized = " ".join(str(summary or "").split()).strip()
+    if not normalized:
+        normalized = base
+    sentences = _split_summary_sentences(normalized)
+    clipped = " ".join(sentences[:2]).strip() if sentences else base
+    if len(clipped) > max_chars:
+        clipped = clipped[:max_chars].rstrip() + "..."
+    return clipped or base
+
+
 def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
     route_key = (route or "full").lower()
     summary = str(answer.get("summary", "")).strip()
@@ -91,6 +121,8 @@ def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[
             summary = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
         else:
             summary = "요청에 대한 핵심 요약입니다."
+    if route_key == "plan_only":
+        summary = _enforce_plan_only_summary(summary)
     payload = {
         "summary": summary,
         "resume_improvements": list(answer.get("resume_improvements", []) or []),
@@ -151,8 +183,26 @@ def _run_tool_loop_structured(
     max_steps: int = 4,
     max_tool_rounds: int = 2,
 ) -> TStructured:
+    structured, _ = _run_tool_loop_structured_with_trace(
+        prompt=prompt,
+        tools=tools,
+        output_schema=output_schema,
+        max_steps=max_steps,
+        max_tool_rounds=max_tool_rounds,
+    )
+    return structured
+
+
+def _run_tool_loop_structured_with_trace(
+    prompt: str,
+    tools: list[BaseTool],
+    output_schema: type[TStructured],
+    max_steps: int = 4,
+    max_tool_rounds: int = 2,
+) -> tuple[TStructured, list[str]]:
     llm = get_chat_model(temperature=0.2).bind_tools(tools)
     messages = [HumanMessage(content=prompt)]
+    tool_outputs: list[str] = []
     seen_calls: set[str] = set()
     tool_round_count = 0
     for _ in range(max_steps):
@@ -202,9 +252,11 @@ def _run_tool_loop_structured(
             seen_calls.add(signature)
 
             output = matched_tool.invoke(args)
+            output_text = str(output)
+            tool_outputs.append(output_text)
             messages.append(
                 ToolMessage(
-                    content=str(output),
+                    content=output_text,
                     tool_call_id=call["id"],
                     name=matched_tool.name,
                 )
@@ -221,7 +273,7 @@ def _run_tool_loop_structured(
             break
 
     parser = get_chat_model(temperature=0.2).with_structured_output(output_schema)
-    return parser.invoke(
+    structured = parser.invoke(
         [
             *messages,
             HumanMessage(
@@ -233,6 +285,7 @@ def _run_tool_loop_structured(
             ),
         ],
     )
+    return structured, tool_outputs
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
@@ -323,6 +376,66 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         if isinstance(evidence_map, dict) and evidence_map:
             lines.append(f"- 근거 매핑: {evidence_map}")
         return "\n".join(lines) if lines else str(notes)
+
+    def _extract_tool_payloads(tool_outputs: list[str]) -> list[dict[str, Any]]:
+        payloads: list[dict[str, Any]] = []
+        for item in tool_outputs:
+            try:
+                loaded = json.loads(item)
+            except Exception:
+                continue
+            if isinstance(loaded, dict):
+                payloads.append(loaded)
+        return payloads
+
+    def _resume_tool_reflected(notes: ResumeNotes, tool_outputs: list[str]) -> bool:
+        payloads = _extract_tool_payloads(tool_outputs)
+        if not payloads:
+            return True
+        merged_text = " ".join([*notes.key_findings, *notes.improvement_points]).lower()
+        for payload in payloads:
+            expected_tokens: list[str] = []
+            matched = payload.get("matched_keywords", [])
+            missing = payload.get("missing_keywords", [])
+            score = payload.get("match_score", payload.get("required_match_rate"))
+            missing_required = payload.get("missing_required_top", [])
+            missing_preferred = payload.get("missing_preferred_top", [])
+            if isinstance(matched, list):
+                expected_tokens.extend(str(item).lower() for item in matched if str(item).strip())
+            if isinstance(missing, list):
+                expected_tokens.extend(str(item).lower() for item in missing if str(item).strip())
+            if isinstance(missing_required, list):
+                expected_tokens.extend(str(item).lower() for item in missing_required if str(item).strip())
+            if isinstance(missing_preferred, list):
+                expected_tokens.extend(str(item).lower() for item in missing_preferred if str(item).strip())
+            if score is not None:
+                expected_tokens.extend([str(score), f"{score}%"])
+            if any(token and token in merged_text for token in expected_tokens):
+                return True
+        return False
+
+    def _interview_tool_reflected(notes: InterviewNotes, tool_outputs: list[str]) -> bool:
+        payloads = _extract_tool_payloads(tool_outputs)
+        if not payloads:
+            return True
+        merged_questions = " ".join(notes.expected_questions).lower()
+        for payload in payloads:
+            questions = payload.get("questions", [])
+            if not isinstance(questions, list):
+                continue
+            for question in questions:
+                q = str(question).strip().lower()
+                if not q:
+                    continue
+                if q in merged_questions or q[:12] in merged_questions:
+                    return True
+        return False
+
+    def _tool_outputs_preview(tool_outputs: list[str], limit: int = 2) -> str:
+        if not tool_outputs:
+            return "[]"
+        shortened = [str(item)[:240] for item in tool_outputs[:limit]]
+        return json.dumps(shortened, ensure_ascii=False)
 
     def _fallback_resume_notes(state: AgentState, reason: str) -> dict[str, Any]:
         return {
@@ -510,11 +623,6 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
             return "pm, product, roadmap, metric"
         return target_role
 
-    def _is_role_relevant(text: str, hint: str) -> bool:
-        keywords = [token.strip().lower() for token in hint.split(",") if token.strip()]
-        lowered = text.lower()
-        return any(keyword in lowered for keyword in keywords) if keywords else True
-
     def _category_filter_for_route(route: str) -> set[str] | None:
         route_key = (route or "full").lower()
         fallback_category = {"uncategorized"}
@@ -526,40 +634,70 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
             return {"job_postings", "jd", "interview_guides"} | fallback_category
         return None
 
-    def _rerank_hits(
-        hits: list[SearchHit],
-        query: str,
-        role_hint: str,
-        route: str,
-        top_k: int = 4,
-    ) -> list[SearchHit]:
-        """
-        Dedicated rerank layer.
-        This function is an extension point for future rerankers
-        (e.g., cross-encoder / LLM-based rerank) without touching retriever.search().
-        """
-        if not hits:
+    def _chunk_inline_text(text: str, chunk_size: int = 500, chunk_overlap: int = 120) -> list[str]:
+        cleaned = " ".join(str(text or "").split()).strip()
+        if not cleaned:
             return []
-        query_lower = query.lower()
-        route_categories = _category_filter_for_route(route)
-        rescored: list[SearchHit] = []
-        for hit in hits:
-            category = str(hit.metadata.get("category", "")).lower()
-            role_boost = (
-                0.15 if _is_role_relevant(f"{hit.source} {hit.content}", role_hint) else 0.0
-            )
-            category_boost = 0.08 if route_categories and category in route_categories else 0.0
-            lexical_boost = 0.05 if any(token in hit.content.lower() for token in query_lower.split()) else 0.0
-            rescored.append(
-                SearchHit(
-                    content=hit.content,
-                    source=hit.source,
-                    score=round(hit.score + role_boost + category_boost + lexical_boost, 4),
-                    metadata=hit.metadata,
+        if len(cleaned) <= chunk_size:
+            return [cleaned]
+        step = max(chunk_size - chunk_overlap, 50)
+        chunks: list[str] = []
+        for start in range(0, len(cleaned), step):
+            chunk = cleaned[start : start + chunk_size].strip()
+            if chunk:
+                chunks.append(chunk)
+            if start + chunk_size >= len(cleaned):
+                break
+        return chunks
+
+    def _lexical_overlap_score(query: str, text: str) -> float:
+        query_tokens = {token for token in re.findall(r"[0-9A-Za-z가-힣]+", query.lower()) if len(token) > 1}
+        if not query_tokens:
+            return 0.0
+        text_tokens = {token for token in re.findall(r"[0-9A-Za-z가-힣]+", text.lower()) if len(token) > 1}
+        if not text_tokens:
+            return 0.0
+        overlap = len(query_tokens & text_tokens) / max(len(query_tokens), 1)
+        return min(1.0, overlap)
+
+    def _ephemeral_input_hits(
+        query: str,
+        jd_text: str,
+        resume_text: str,
+        top_k: int = 2,
+    ) -> list[SearchHit]:
+        ephemeral_hits: list[SearchHit] = []
+
+        def _append_hits(raw_text: str, source: str, source_type: str, base_score: float, start_chunk_id: int) -> None:
+            for idx, chunk in enumerate(_chunk_inline_text(raw_text)[:4], start=1):
+                overlap_score = _lexical_overlap_score(query, chunk)
+                if overlap_score <= 0.0:
+                    continue
+                score = round(base_score + (overlap_score * 0.35), 4)
+                ephemeral_hits.append(
+                    SearchHit(
+                        content=chunk,
+                        source=source,
+                        score=score,
+                        metadata={
+                            "category": "jd" if source_type == "jd_upload" else "resume_examples",
+                            "source_type": source_type,
+                            "location": f"inline_chunk={idx}",
+                            "chunk_id": start_chunk_id - idx,
+                        },
+                    )
                 )
-            )
-        rescored.sort(key=lambda item: item.score, reverse=True)
-        return rescored[:top_k]
+
+        _append_hits(jd_text, "uploaded_jd_text", "jd_upload", base_score=0.42, start_chunk_id=-1000)
+        _append_hits(
+            resume_text,
+            "uploaded_resume_text",
+            "resume_upload",
+            base_score=0.36,
+            start_chunk_id=-2000,
+        )
+        ephemeral_hits.sort(key=lambda item: item.score, reverse=True)
+        return ephemeral_hits[:top_k]
 
     def rag_node(state: AgentState) -> AgentState:
         planner = llm.with_structured_output(RagPlan)
@@ -569,6 +707,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         retrieval_top_k = 2 if route == "plan_only" else 4
         query_limit = 2 if route == "plan_only" else 3
         jd_text = (state.get("jd_text") or "").strip()
+        resume_text = (state.get("resume_text") or "").strip()
         category_filter = _category_filter_for_route(route)
         try:
             rag_plan = planner.invoke(
@@ -589,6 +728,8 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             source_hint = role_hint
 
         def _location_label(metadata: dict[str, Any]) -> str:
+            if "location" in metadata:
+                return str(metadata["location"])
             if "page_number" in metadata:
                 return f"page={metadata['page_number']}"
             if "paragraph_number" in metadata:
@@ -618,12 +759,26 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 if not current or hit.score > current.score:
                     merged_hits[key] = hit
 
-        ranked_hits = _rerank_hits(
+        # Blend uploaded JD/Resume as ephemeral evidence to strengthen gap-analysis grounding.
+        for hit in _ephemeral_input_hits(
+            query=state["user_query"],
+            jd_text=jd_text,
+            resume_text=resume_text,
+            top_k=2,
+        ):
+            key = f"{hit.source}::{hit.content[:120]}"
+            current = merged_hits.get(key)
+            if not current or hit.score > current.score:
+                merged_hits[key] = hit
+
+        ranked_hits = rerank_hits(
             hits=list(merged_hits.values()),
             query=state["user_query"],
             role_hint=source_hint,
-            route=route,
+            route_categories=category_filter,
             top_k=retrieval_top_k,
+            provider=settings.rerank_provider,
+            enabled=settings.rerank_enabled,
         )
         top_score = ranked_hits[0].score if ranked_hits else 0.0
         low_confidence = (not ranked_hits) or (top_score < settings.rag_evidence_score_threshold)
@@ -732,6 +887,7 @@ RAG 근거:
 
 지시:
 1) resume_keyword_match_score 도구를 활용해 키워드 적합도를 반영하세요.
+1-1) JD/공고 텍스트가 있으면 jd_resume_gap_score 도구로 필수/우대 매칭률과 누락 역량 top-N을 반영하세요.
 2) 도구 호출이 필요 없다고 판단되면 즉시 최종 결과를 작성하세요.
 3) 아래 Few-shot 스타일을 참고해 동일한 형식으로 작성하세요.
 4) 근거 문장/출처 기반으로만 작성하고, 근거 없는 단정은 금지합니다.
@@ -739,7 +895,7 @@ RAG 근거:
 6) 로컬 정책: 이력서 텍스트가 없으면 개인 문장 교정보다 "직무-이력서 갭 분석 및 보강 체크리스트" 중심으로 작성하세요.
 7) JD/공고 텍스트가 있으면 JD 요구역량과 이력서 간 갭을 항목별로 명시적으로 비교하세요.
 8) evidence_map 필수: key는 개선/진단 문장, value는 관련 근거 번호 목록(예: [1,2])입니다.
-9) 도구를 호출했다면 도구 결과(JSON)의 score/keywords를 최소 1회 이상 key_findings 또는 improvement_points에 반영하세요.
+9) 도구를 호출했다면 도구 결과(JSON)의 score/keywords/missing_required_top을 최소 1회 이상 key_findings 또는 improvement_points에 반영하세요.
 
 [Few-shot]
 {resume_few_shot}
@@ -770,11 +926,24 @@ RAG 근거:
 """
                 )
             else:
-                structured = _run_tool_loop_structured(
+                structured, tool_outputs = _run_tool_loop_structured_with_trace(
                     prompt=prompt,
-                    tools=[resume_keyword_match_score],
+                    tools=[resume_keyword_match_score, jd_resume_gap_score],
                     output_schema=ResumeNotes,
                 )
+                if tool_outputs and (not _resume_tool_reflected(structured, tool_outputs)):
+                    retry_prompt = (
+                        f"{prompt}\n\n"
+                        "[검증 피드백]\n"
+                        "직전 결과에서 도구 결과 반영이 명확히 감지되지 않았습니다.\n"
+                        f"도구 결과 요약: {_tool_outputs_preview(tool_outputs)}\n"
+                        "반드시 도구 결과의 score/keywords를 key_findings 또는 improvement_points에 최소 1회 포함하세요."
+                    )
+                    structured, _ = _run_tool_loop_structured_with_trace(
+                        prompt=retry_prompt,
+                        tools=[resume_keyword_match_score, jd_resume_gap_score],
+                        output_schema=ResumeNotes,
+                    )
             return {"resume_notes": structured.model_dump()}
         except Exception as exc:
             return {"resume_notes": _fallback_resume_notes(state, f"resume_node fallback: {exc}")}
@@ -834,11 +1003,24 @@ RAG 근거:
 """
                 )
             else:
-                structured = _run_tool_loop_structured(
+                structured, tool_outputs = _run_tool_loop_structured_with_trace(
                     prompt=prompt,
                     tools=[interview_question_bank],
                     output_schema=InterviewNotes,
                 )
+                if tool_outputs and (not _interview_tool_reflected(structured, tool_outputs)):
+                    retry_prompt = (
+                        f"{prompt}\n\n"
+                        "[검증 피드백]\n"
+                        "직전 결과에서 도구 결과 반영이 명확히 감지되지 않았습니다.\n"
+                        f"도구 결과 요약: {_tool_outputs_preview(tool_outputs)}\n"
+                        "반드시 도구 결과의 questions 중 최소 1개를 expected_questions에 반영하세요."
+                    )
+                    structured, _ = _run_tool_loop_structured_with_trace(
+                        prompt=retry_prompt,
+                        tools=[interview_question_bank],
+                        output_schema=InterviewNotes,
+                    )
             return {"interview_notes": structured.model_dump()}
         except Exception as exc:
             return {
@@ -999,6 +1181,7 @@ class JobPilotService:
 
     def __init__(self) -> None:
         settings = load_settings()
+        self.settings = settings
         self.memory = SessionMemory(
             storage_path=settings.index_dir / "session_memory.json",
             max_sessions=settings.memory_max_sessions,
@@ -1006,12 +1189,79 @@ class JobPilotService:
             persist_enabled=settings.session_memory_persist_enabled,
             pii_mask_enabled=settings.session_memory_pii_mask_enabled,
         )
+        self.graph_state_cache_path = settings.index_dir / "graph_state_cache.json"
+        self.graph_state_cache_lock = FileLock(str(settings.index_dir / "graph_state_cache.json.lock"))
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)
+
+    def _request_signature(self, req: ChatRequest) -> str:
+        raw = "||".join(
+            [
+                req.session_id,
+                req.user_query,
+                req.target_role,
+                req.resume_text,
+                req.jd_text,
+            ]
+        )
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+    def _load_graph_state_cache(self) -> dict[str, Any]:
+        if not self.graph_state_cache_path.exists():
+            return {}
+        try:
+            raw = json.loads(self.graph_state_cache_path.read_text(encoding="utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_graph_state_cache(self, payload: dict[str, Any]) -> None:
+        self.graph_state_cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self.graph_state_cache_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _get_cached_final_answer(self, req: ChatRequest) -> dict[str, Any] | None:
+        with self.graph_state_cache_lock:
+            cache = self._load_graph_state_cache()
+        record = cache.get(req.session_id, {})
+        if not isinstance(record, dict):
+            return None
+        if record.get("signature") != self._request_signature(req):
+            return None
+        payload = record.get("payload")
+        return payload if isinstance(payload, dict) else None
+
+    def _upsert_graph_state_cache(self, req: ChatRequest, result: AgentState) -> None:
+        payload = {
+            "summary": result.get("final_answer", {}).get("summary", ""),
+            "resume_improvements": result.get("final_answer", {}).get("resume_improvements", []),
+            "interview_preparation": result.get("final_answer", {}).get("interview_preparation", []),
+            "two_week_plan": result.get("final_answer", {}).get("two_week_plan", []),
+            "references": result.get("final_answer", {}).get("references", []),
+            "route": result.get("route"),
+            "routing_reason": result.get("routing_reason"),
+            "rag_low_confidence": result.get("rag_low_confidence"),
+            "cached_state_hit": False,
+        }
+        with self.graph_state_cache_lock:
+            cache = self._load_graph_state_cache()
+            cache[req.session_id] = {
+                "signature": self._request_signature(req),
+                "payload": payload,
+            }
+            self._save_graph_state_cache(cache)
 
     def run(self, req: ChatRequest) -> ChatResponse:
         try:
             self.memory.add(req.session_id, "user", req.user_query)
+            cached_payload = self._get_cached_final_answer(req)
+            if cached_payload:
+                cached_payload["cached_state_hit"] = True
+                response = ChatResponse(session_id=req.session_id, **cached_payload)
+                self.memory.add(req.session_id, "assistant", response.summary)
+                return response
 
             state: AgentState = {
                 "session_id": req.session_id,
@@ -1024,7 +1274,14 @@ class JobPilotService:
                 state,
                 config={"configurable": {"thread_id": req.session_id}},
             )
-            payload = result["final_answer"]
+            self._upsert_graph_state_cache(req, result)
+            payload = {
+                **result["final_answer"],
+                "route": result.get("route"),
+                "routing_reason": result.get("routing_reason"),
+                "rag_low_confidence": result.get("rag_low_confidence"),
+                "cached_state_hit": False,
+            }
             response = ChatResponse(session_id=req.session_id, **payload)
 
             self.memory.add(req.session_id, "assistant", response.summary)
