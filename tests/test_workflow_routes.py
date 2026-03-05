@@ -50,9 +50,21 @@ def test_enforce_final_answer_policy_adds_refs_and_citation() -> None:
     enforced = enforce_final_answer_policy(
         route="full",
         payload=payload,
-        rag_refs=["1) sample.md#chunk_1 (score=0.8, category=uncategorized, location=n/a)"],
+        rag_refs=[
+            {
+                "rank": 1,
+                "source": "sample.md",
+                "chunk_id": 1,
+                "location": "n/a",
+                "score": 0.8,
+                "category": "uncategorized",
+                "snippet": "sample snippet",
+            }
+        ],
     )
     assert enforced["references"]
+    assert isinstance(enforced["references"][0], dict)
     assert all("[1]" in item for item in enforced["resume_improvements"])
     assert len(enforced["two_week_plan"]) >= 4
+    assert all("추가 권장 액션" not in item for item in enforced["two_week_plan"])
 

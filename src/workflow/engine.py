@@ -33,7 +33,7 @@ class AgentState(TypedDict, total=False):
     jd_text: str
     memory_messages: list[dict[str, str]]
     rag_context: str
-    rag_refs: list[str]
+    rag_refs: list[dict[str, Any]]
     rag_low_confidence: bool
     route: str
     routing_reason: str
@@ -113,6 +113,25 @@ def _enforce_plan_only_summary(summary: str, max_chars: int = 140) -> str:
     return clipped or base
 
 
+def _scope_notice(route: str) -> str:
+    route_key = (route or "full").lower()
+    if route_key == "plan_only":
+        return "법/세무/노무 등 전문 자문은 별도 확인이 필요하며 최신 공고/사내 정책은 원문을 확인하세요."
+    return (
+        "안내: 본 답변은 취업 준비 일반 정보이며 법/세무/노무 자문이 아닙니다. "
+        "최신 공고/회사 정책은 반드시 원문으로 확인하세요."
+    )
+
+
+def _attach_scope_notice(route: str, summary: str) -> str:
+    text = " ".join(str(summary or "").split()).strip()
+    if not text:
+        text = "요청에 대한 핵심 요약입니다."
+    if "법/세무/노무" in text and ("원문" in text or "최신 공고" in text):
+        return text
+    return f"{text} {_scope_notice(route)}".strip()
+
+
 def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
     route_key = (route or "full").lower()
     summary = str(answer.get("summary", "")).strip()
@@ -121,6 +140,7 @@ def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[
             summary = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
         else:
             summary = "요청에 대한 핵심 요약입니다."
+    summary = _attach_scope_notice(route_key, summary)
     if route_key == "plan_only":
         summary = _enforce_plan_only_summary(summary)
     payload = {
@@ -146,16 +166,80 @@ def _ensure_citation(item: str, default_tag: str) -> str:
     return f"{text} {default_tag}".strip()
 
 
+def _has_valid_citation(item: str, max_ref: int) -> bool:
+    if max_ref <= 0:
+        return False
+    numbers = re.findall(r"\[(\d+)\]", str(item))
+    if not numbers:
+        return False
+    return any(1 <= int(n) <= max_ref for n in numbers)
+
+
+def _normalize_reference_records(references: list[Any] | None) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(references or [], start=1):
+        if isinstance(item, dict):
+            normalized.append(
+                {
+                    "rank": int(item.get("rank", idx)),
+                    "source": str(item.get("source", "unknown")),
+                    "chunk_id": item.get("chunk_id"),
+                    "location": str(item.get("location", "n/a")),
+                    "score": float(item.get("score", 0.0) or 0.0),
+                    "category": item.get("category"),
+                    "snippet": str(item.get("snippet", "")),
+                }
+            )
+            continue
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized.append(
+            {
+                "rank": idx,
+                "source": text,
+                "chunk_id": None,
+                "location": "n/a",
+                "score": 0.0,
+                "category": None,
+                "snippet": text[:120],
+            }
+        )
+    return normalized
+
+
+def _make_insufficient_input_item(field_name: str, idx: int) -> str:
+    prompts = {
+        "resume_improvements": (
+            "근거/입력 정보가 부족해 맞춤 이력서 개선 항목 생성이 제한됩니다. "
+            "경력연차, 핵심 프로젝트, 지원 회사 정보를 추가로 제공해 주세요."
+        ),
+        "interview_preparation": (
+            "근거/입력 정보가 부족해 맞춤 면접 대비 항목 생성이 제한됩니다. "
+            "지원 포지션, 예상 면접 유형, 핵심 성과 지표를 추가로 알려주세요."
+        ),
+        "two_week_plan": (
+            "근거/입력 정보가 부족해 2주 실행계획을 세부화하기 어렵습니다. "
+            "목표 회사, 일정 제약, 우선순위 역량을 추가로 제공해 주세요."
+        ),
+    }
+    base = prompts.get(
+        field_name,
+        "근거/입력 정보가 부족합니다. 세부 조건(경력연차, 지원회사, 핵심 프로젝트)을 추가로 알려주세요.",
+    )
+    return f"{base} (추가 확인 {idx})"
+
+
 def enforce_final_answer_policy(
     route: str,
     payload: dict[str, Any],
-    rag_refs: list[str] | None = None,
+    rag_refs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     min_rules = route_minimums(route)
     refs = payload.get("references", [])
-    references = [str(item) for item in refs] if isinstance(refs, list) else []
+    references = _normalize_reference_records(refs if isinstance(refs, list) else [])
     if not references and isinstance(rag_refs, list) and rag_refs:
-        references = [str(item) for item in rag_refs[:4]]
+        references = _normalize_reference_records(rag_refs[:4])
 
     citation_tag = "[1]" if references else ""
     for field_name, minimum in min_rules.items():
@@ -167,7 +251,7 @@ def enforce_final_answer_policy(
             continue
         if len(normalized_items) < minimum:
             for idx in range(len(normalized_items) + 1, minimum + 1):
-                normalized_items.append(f"추가 권장 액션 {idx}")
+                normalized_items.append(_make_insufficient_input_item(field_name, idx))
         if citation_tag:
             normalized_items = [_ensure_citation(item, citation_tag) for item in normalized_items]
         payload[field_name] = normalized_items
@@ -286,6 +370,20 @@ def _run_tool_loop_structured_with_trace(
         ],
     )
     return structured, tool_outputs
+
+
+def _needs_citation_rewrite(payload: dict[str, Any], references: list[dict[str, Any]]) -> bool:
+    if not references:
+        return False
+    max_ref = len(references)
+    for field_name in ("resume_improvements", "interview_preparation", "two_week_plan"):
+        items = payload.get(field_name, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not _has_valid_citation(str(item), max_ref=max_ref):
+                return True
+    return False
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
@@ -523,9 +621,21 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 
     def _fallback_final_answer(state: AgentState, reason: str) -> dict[str, Any]:
         refs = state.get("rag_refs") or []
-        references = refs[:4] if isinstance(refs, list) else []
+        references = _normalize_reference_records(refs[:4] if isinstance(refs, list) else [])
         if not references:
-            references = ["RAG 근거 부족: 일반 가이드 기반 결과"]
+            references = _normalize_reference_records(
+                [
+                    {
+                        "rank": 1,
+                        "source": "RAG 근거 부족: 일반 가이드 기반 결과",
+                        "chunk_id": None,
+                        "location": "n/a",
+                        "score": 0.0,
+                        "category": "fallback",
+                        "snippet": "RAG 근거 부족",
+                    }
+                ]
+            )
         return {
             "summary": f"일부 구조화 단계 실패로 안전 모드 응답을 제공합니다. ({reason})",
             "resume_improvements": [
@@ -806,14 +916,6 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 "보수적 표현과 조건부 제안을 우선하세요."
             )
 
-        ref_names = [
-            (
-                f"{r['rank']}) {r['source']}#chunk_{r.get('chunk_id', 'na')} "
-                f"(score={r['score']}, category={r.get('category')}, location={r.get('location')}) "
-                f"| snippet={r.get('snippet')}"
-            )
-            for r in refs
-        ]
         rag_context = "\n\n".join(context_parts)
         rag_context += (
             f"\n\n[rag-agent-note] route={route}, source_hint={source_hint}, "
@@ -822,7 +924,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         )
         return {
             "rag_context": rag_context,
-            "rag_refs": ref_names,
+            "rag_refs": refs,
             "rag_low_confidence": low_confidence,
         }
 
@@ -1097,13 +1199,31 @@ RAG 근거:
 - plan_only에서도 summary는 1~2문장으로 반드시 작성.
 - route가 full 또는 plan_only인 경우 Plan Agent 결과를 우선 반영해 two_week_plan 작성.
 - references는 출처 파일명 중심으로 구성.
+- 책임 한계 고지 템플릿을 summary에 포함:
+  "법/세무/노무 등 비전문 영역은 별도 확인이 필요하며 최신 공고/회사 정책은 반드시 원문 확인이 필요합니다."
 
 [권장 규칙]
 - 액션 불릿 끝에 citation 표기 권장(예: [1][2]).
 - route별 최소 개수/빈 배열 정책은 후처리에서 강제되므로 우선 의미 일관성에 집중.
 """
             )
-            normalized = _normalize_final_answer_by_route(route, answer.model_dump())
+            draft_payload = answer.model_dump()
+            if _needs_citation_rewrite(draft_payload, state.get("rag_refs", []) or []):
+                answer = parser_llm.invoke(
+                    f"""
+기존 초안에서 일부 불릿이 references 번호와 연결되지 않았습니다.
+아래 정보를 유지하면서 각 불릿에 최소 1개의 유효 citation([1]~[{len(state.get("rag_refs", []) or [])}])을 연결해 1회 재작성하세요.
+생각 과정을 노출하지 말고 JSON 결과만 출력하세요.
+
+[기존 초안]
+{json.dumps(draft_payload, ensure_ascii=False)}
+
+[참고 출처]
+{state.get('rag_refs', [])}
+"""
+                )
+                draft_payload = answer.model_dump()
+            normalized = _normalize_final_answer_by_route(route, draft_payload)
             normalized = _enforce_final_answer_policy(route, normalized, state)
             return {"final_answer": normalized}
         except Exception as exc:
@@ -1206,6 +1326,24 @@ class JobPilotService:
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
+    def _should_bypass_cache(self, req: ChatRequest) -> bool:
+        if not self.settings.graph_state_cache_enabled:
+            return True
+        if not self.settings.graph_state_cache_bypass_contextual:
+            return False
+        query = (req.user_query or "").lower()
+        contextual_triggers = (
+            "이전 대화",
+            "이전 맥락",
+            "앞서",
+            "방금",
+            "다시",
+            "재작성",
+            "이어서",
+            "기존 맥락",
+        )
+        return any(token in query for token in contextual_triggers)
+
     def _load_graph_state_cache(self) -> dict[str, Any]:
         if not self.graph_state_cache_path.exists():
             return {}
@@ -1223,6 +1361,8 @@ class JobPilotService:
         )
 
     def _get_cached_final_answer(self, req: ChatRequest) -> dict[str, Any] | None:
+        if self._should_bypass_cache(req):
+            return None
         with self.graph_state_cache_lock:
             cache = self._load_graph_state_cache()
         record = cache.get(req.session_id, {})
@@ -1234,12 +1374,16 @@ class JobPilotService:
         return payload if isinstance(payload, dict) else None
 
     def _upsert_graph_state_cache(self, req: ChatRequest, result: AgentState) -> None:
+        if not self.settings.graph_state_cache_enabled:
+            return
         payload = {
             "summary": result.get("final_answer", {}).get("summary", ""),
             "resume_improvements": result.get("final_answer", {}).get("resume_improvements", []),
             "interview_preparation": result.get("final_answer", {}).get("interview_preparation", []),
             "two_week_plan": result.get("final_answer", {}).get("two_week_plan", []),
-            "references": result.get("final_answer", {}).get("references", []),
+            "references": _normalize_reference_records(
+                result.get("final_answer", {}).get("references", [])
+            ),
             "route": result.get("route"),
             "routing_reason": result.get("routing_reason"),
             "rag_low_confidence": result.get("rag_low_confidence"),
@@ -1258,6 +1402,9 @@ class JobPilotService:
             self.memory.add(req.session_id, "user", req.user_query)
             cached_payload = self._get_cached_final_answer(req)
             if cached_payload:
+                cached_payload["references"] = _normalize_reference_records(
+                    cached_payload.get("references", [])
+                )
                 cached_payload["cached_state_hit"] = True
                 response = ChatResponse(session_id=req.session_id, **cached_payload)
                 self.memory.add(req.session_id, "assistant", response.summary)
@@ -1277,6 +1424,9 @@ class JobPilotService:
             self._upsert_graph_state_cache(req, result)
             payload = {
                 **result["final_answer"],
+                "references": _normalize_reference_records(
+                    result.get("final_answer", {}).get("references", [])
+                ),
                 "route": result.get("route"),
                 "routing_reason": result.get("routing_reason"),
                 "rag_low_confidence": result.get("rag_low_confidence"),

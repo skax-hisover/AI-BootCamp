@@ -13,7 +13,7 @@ class RoutingSampleResult:
 
 @dataclass(frozen=True)
 class AnswerQualitySample:
-    references: list[str]
+    references: list[object]
     two_week_plan: list[str]
 
 

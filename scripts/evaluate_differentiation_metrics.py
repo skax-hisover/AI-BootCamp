@@ -32,6 +32,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-routing-accuracy", type=float, default=0.5)
     parser.add_argument("--min-reference-rate", type=float, default=0.8)
     parser.add_argument("--min-plan-quality-rate", type=float, default=0.8)
+    parser.add_argument(
+        "--output",
+        default="",
+        help="Optional output file path. When set, writes the full report with UTF-8 encoding.",
+    )
     return parser.parse_args()
 
 
@@ -108,28 +113,46 @@ def main() -> None:
     ref_rate = reference_inclusion_rate(reference_samples)
     plan_rate = plan_quality_rate(plan_quality_samples)
 
-    print("=== Differentiation Metrics ===")
-    print(f"Cases: {len(cases)}")
+    report_lines: list[str] = []
+    report_lines.append("=== Differentiation Metrics ===")
+    report_lines.append(f"Cases: {len(cases)}")
     if routing_samples:
-        print(f"Routing accuracy: {routing:.2%}")
+        report_lines.append(f"Routing accuracy: {routing:.2%}")
     else:
-        print("Routing accuracy: n/a (expected_route not provided)")
-    print(f"Reference inclusion rate: {ref_rate:.2%}")
-    print(f"Plan quality rate (full/plan_only): {plan_rate:.2%}")
-    print("\n=== Case Details ===")
+        report_lines.append("Routing accuracy: n/a (expected_route not provided)")
+    report_lines.append(f"Reference inclusion rate: {ref_rate:.2%}")
+    report_lines.append(f"Plan quality rate (full/plan_only): {plan_rate:.2%}")
+    report_lines.append("")
+    report_lines.append("=== Case Details ===")
     for item in details:
-        print(json.dumps(item, ensure_ascii=False))
+        report_lines.append(json.dumps(item, ensure_ascii=False))
 
     if routing_samples and routing < args.min_routing_accuracy:
-        raise SystemExit(
+        report_lines.append(
             f"[FAIL] routing accuracy {routing:.2%} < {args.min_routing_accuracy:.2%}"
         )
+        _emit_report(report_lines, args.output)
+        raise SystemExit(report_lines[-1])
     if ref_rate < args.min_reference_rate:
-        raise SystemExit(f"[FAIL] reference inclusion rate {ref_rate:.2%} < {args.min_reference_rate:.2%}")
+        report_lines.append(f"[FAIL] reference inclusion rate {ref_rate:.2%} < {args.min_reference_rate:.2%}")
+        _emit_report(report_lines, args.output)
+        raise SystemExit(report_lines[-1])
     if plan_rate < args.min_plan_quality_rate:
-        raise SystemExit(f"[FAIL] plan quality rate {plan_rate:.2%} < {args.min_plan_quality_rate:.2%}")
+        report_lines.append(f"[FAIL] plan quality rate {plan_rate:.2%} < {args.min_plan_quality_rate:.2%}")
+        _emit_report(report_lines, args.output)
+        raise SystemExit(report_lines[-1])
 
-    print("[PASS] All thresholds satisfied.")
+    report_lines.append("[PASS] All thresholds satisfied.")
+    _emit_report(report_lines, args.output)
+
+
+def _emit_report(lines: list[str], output_path: str) -> None:
+    text = "\n".join(lines)
+    print(text)
+    if output_path:
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

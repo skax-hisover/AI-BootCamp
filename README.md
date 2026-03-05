@@ -2,6 +2,12 @@
 
 JobPilot AI는 취업/이직 준비를 위한 End-to-End 멀티 에이전트 서비스입니다.
 
+## 처음 실행 3단계
+
+1. `.env` 설정: `Copy-Item .env.example .env` 후 `AOAI_*` 값 입력
+2. 지식 문서 배치: `data/knowledge/job_postings|jd|interview_guides|portfolio_examples` 중 최소 1개 카테고리에 문서 추가
+3. 실행: `python scripts/run_streamlit.py` (UI) 또는 `python scripts/run_api.py` (API)
+
 ## 구현 완료 항목
 
 - **프롬프트 엔지니어링**: Supervisor/Resume/Interview 에이전트 역할 기반 프롬프트
@@ -85,6 +91,8 @@ Copy-Item .env.example .env
 - `RAG_EVIDENCE_SCORE_THRESHOLD` (선택, 기본 `0.45`; low-confidence 모드 임계치)
 - `RERANK_ENABLED` (선택, 기본 `true`; 전용 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 `heuristic`; `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
+- `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
+- `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
 
 ## 빠른 시작 (배포 관점)
 
@@ -104,6 +112,15 @@ Copy-Item .env.example .env
 - [ ] 카테고리별 최소 1개 문서 확보: `job_postings/`, `jd/`, `interview_guides/`, `portfolio_examples/`
 - [ ] 문서 최신성 기준: 수집/수정 기준 3개월 이내 문서 우선, 오래된 문서는 라벨링 또는 교체
 - [ ] 금지 콘텐츠 제외: 개인정보 원문(주민번호/연락처), 저작권 위반 원문 전문, 근거 불명확 루머/홍보성 자료
+
+### 지식 문서 메타데이터 최소 필드(권장)
+
+| 필드 | 설명 | 예시 |
+|---|---|---|
+| `collected_at` | 문서 수집/업로드 일시(ISO 권장) | `2026-03-05` |
+| `source_url` | 원문 출처 URL(내부 문서는 `internal://...`) | `https://careers.example.com/posting/123` |
+| `curator` | 요약/정리 담당자 또는 팀 | `jobpilot-team` |
+| `license` | 사용 가능 라이선스/내부 사용 정책 | `CC-BY-4.0`, `internal-use` |
 
 3) 실행  
 - API: `python scripts/run_api.py`  
@@ -166,8 +183,9 @@ python scripts/run_streamlit.py
 ## 차별성 지표 자동화
 
 ```powershell
-python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
+python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json --output docs/evidence/metrics_run_output.txt
 ```
 
 - 지표: 라우팅 정확도(`expected_route`가 있을 때), 근거 포함률, 플랜 품질률
 - 기준 조정: `--min-routing-accuracy`, `--min-reference-rate`, `--min-plan-quality-rate`
+- 증빙 파일은 `--output` 옵션을 사용하면 UTF-8로 저장되어 인코딩 깨짐을 방지할 수 있습니다.

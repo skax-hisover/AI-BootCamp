@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -142,6 +143,22 @@ def _compress_long_text(text: str, target_chars: int) -> tuple[str, bool]:
     return compressed, True
 
 
+def _merge_uploaded_text(existing: str, uploaded: str, mode: str) -> str:
+    existing_clean = (existing or "").strip()
+    uploaded_clean = (uploaded or "").strip()
+    if not uploaded_clean:
+        return existing or ""
+    if mode == "추가하기" and existing_clean:
+        return f"{existing_clean}\n\n{uploaded_clean}".strip()
+    return uploaded_clean
+
+
+def _upload_signature(uploaded_file) -> str:
+    data = uploaded_file.getvalue()
+    digest = hashlib.sha1(data).hexdigest()
+    return f"{uploaded_file.name}:{len(data)}:{digest}"
+
+
 def run() -> None:
     st.set_page_config(page_title="JobPilot AI", page_icon=":briefcase:", layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
@@ -178,6 +195,16 @@ def run() -> None:
         st.session_state.resume_target_chars = 18000
     if "max_jd_chars" not in st.session_state:
         st.session_state.max_jd_chars = DEFAULT_MAX_JD_CHARS
+    if "auto_compress_jd" not in st.session_state:
+        st.session_state.auto_compress_jd = False
+    if "jd_target_chars" not in st.session_state:
+        st.session_state.jd_target_chars = 8000
+    if "upload_apply_mode" not in st.session_state:
+        st.session_state.upload_apply_mode = "덮어쓰기"
+    if "last_resume_upload_sig" not in st.session_state:
+        st.session_state.last_resume_upload_sig = ""
+    if "last_jd_upload_sig" not in st.session_state:
+        st.session_state.last_jd_upload_sig = ""
     if "show_debug_meta" not in st.session_state:
         st.session_state.show_debug_meta = False
 
@@ -262,6 +289,25 @@ def run() -> None:
                 key="max_jd_chars",
                 help="JD/공고 텍스트 입력 제한입니다.",
             )
+            st.checkbox(
+                "긴 JD/공고 자동 압축(앞/뒤 핵심만 유지)",
+                key="auto_compress_jd",
+                help="JD/공고 텍스트가 길면 앞/뒤 중심으로 자동 압축합니다.",
+            )
+            st.number_input(
+                "JD 자동 압축 목표 글자 수",
+                min_value=1500,
+                max_value=20000,
+                step=500,
+                key="jd_target_chars",
+                disabled=not st.session_state.auto_compress_jd,
+            )
+            st.radio(
+                "업로드 텍스트 반영 방식",
+                ["덮어쓰기", "추가하기"],
+                key="upload_apply_mode",
+                help="파일 업로드 시 기존 입력값을 대체하거나 뒤에 이어붙일 수 있습니다.",
+            )
         with st.expander("서비스/개인정보 설정", expanded=False):
             st.caption("운영 환경에서 저장 정책과 마스킹 정책을 조정할 수 있습니다.")
             st.checkbox(
@@ -324,22 +370,47 @@ def run() -> None:
 
     extracted_resume = ""
     if uploaded_resume is not None:
-        extracted_resume = _extract_uploaded_text(uploaded_resume)
-        if extracted_resume:
-            if st.session_state.auto_compress_resume:
-                extracted_resume, compressed = _compress_long_text(
-                    extracted_resume, int(st.session_state.resume_target_chars)
+        current_sig = _upload_signature(uploaded_resume)
+        if current_sig != st.session_state.last_resume_upload_sig:
+            extracted_resume = _extract_uploaded_text(uploaded_resume)
+            if extracted_resume:
+                if st.session_state.auto_compress_resume:
+                    extracted_resume, compressed = _compress_long_text(
+                        extracted_resume, int(st.session_state.resume_target_chars)
+                    )
+                    if compressed:
+                        st.info("업로드 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
+                st.success(f"파일 분석 완료: {uploaded_resume.name}")
+                st.session_state.resume_text_input = _merge_uploaded_text(
+                    st.session_state.resume_text_input,
+                    extracted_resume,
+                    st.session_state.upload_apply_mode,
                 )
-                if compressed:
-                    st.info("업로드 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
-            st.success(f"파일 분석 완료: {uploaded_resume.name}")
-            st.session_state.resume_text_input = extracted_resume
+                st.session_state.last_resume_upload_sig = current_sig
+    else:
+        st.session_state.last_resume_upload_sig = ""
 
     if uploaded_jd is not None:
-        extracted_jd = _extract_uploaded_text(uploaded_jd)
-        if extracted_jd:
-            st.success(f"JD 파일 분석 완료: {uploaded_jd.name}")
-            st.session_state.jd_text_input = extracted_jd
+        current_sig = _upload_signature(uploaded_jd)
+        if current_sig != st.session_state.last_jd_upload_sig:
+            extracted_jd = _extract_uploaded_text(uploaded_jd)
+            if extracted_jd:
+                if st.session_state.auto_compress_jd:
+                    extracted_jd, compressed = _compress_long_text(
+                        extracted_jd,
+                        int(st.session_state.jd_target_chars),
+                    )
+                    if compressed:
+                        st.info("JD/공고 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
+                st.success(f"JD 파일 분석 완료: {uploaded_jd.name}")
+                st.session_state.jd_text_input = _merge_uploaded_text(
+                    st.session_state.jd_text_input,
+                    extracted_jd,
+                    st.session_state.upload_apply_mode,
+                )
+                st.session_state.last_jd_upload_sig = current_sig
+    else:
+        st.session_state.last_jd_upload_sig = ""
 
     max_resume_chars = int(st.session_state.max_resume_chars)
     if len(st.session_state.resume_text_input or "") > max_resume_chars:
@@ -490,7 +561,18 @@ def run() -> None:
         if references:
             st.subheader("참고 출처")
             for item in references:
-                st.markdown(f"- {item}")
+                if isinstance(item, dict):
+                    st.markdown(
+                        "- "
+                        f"[{item.get('rank', '?')}] {item.get('source', 'unknown')} "
+                        f"(chunk={item.get('chunk_id', 'na')}, location={item.get('location', 'n/a')}, "
+                        f"score={item.get('score', 0.0)})"
+                    )
+                    snippet = str(item.get("snippet", "")).strip()
+                    if snippet:
+                        st.caption(f"snippet: {snippet}")
+                else:
+                    st.markdown(f"- {item}")
         if st.session_state.show_debug_meta:
             with st.expander("라우팅/신뢰도 메타", expanded=False):
                 st.write(f"- route: `{latest.get('route', 'n/a')}`")

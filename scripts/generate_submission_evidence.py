@@ -77,6 +77,17 @@ def main() -> None:
     rag_context = result.get("rag_context", "")
     rag_preview = rag_context[:800] + ("..." if len(rag_context) > 800 else "")
 
+    rag_lines: list[str] = []
+    for ref in rag_refs if isinstance(rag_refs, list) else []:
+        if isinstance(ref, dict):
+            rag_lines.append(
+                f"- [{ref.get('rank', '?')}] {ref.get('source', 'unknown')} "
+                f"(chunk={ref.get('chunk_id', 'na')}, location={ref.get('location', 'n/a')}, score={ref.get('score', 0.0)})"
+            )
+        else:
+            rag_lines.append(f"- {ref}")
+    rag_refs_text = "\n".join(rag_lines) if rag_lines else "- (없음)"
+
     log_path = output_dir / "agent_execution_log.md"
     log_text = f"""# Agent Execution Log
 
@@ -94,7 +105,7 @@ def main() -> None:
 - Reason: {routing_reason}
 
 ## RAG References
-{chr(10).join(f"- {ref}" for ref in rag_refs) if rag_refs else "- (없음)"}
+{rag_refs_text}
 
 ## RAG Context Preview
 ```

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from functools import lru_cache
 
 from langchain_core.tools import tool
 
@@ -29,12 +30,77 @@ def _infer_role_keywords(target_role: str) -> tuple[str, list[str], list[str]]:
     return key, role_required[key], role_preferred[key]
 
 
+_SYNONYM_CANONICAL = {
+    "rdbms": "database",
+    "db": "database",
+    "mysql": "sql",
+    "postgresql": "sql",
+    "postgres": "sql",
+    "fastapi": "fastapi",
+    "fast-api": "fastapi",
+    "backend": "백엔드",
+    "back-end": "백엔드",
+    "pm": "pm",
+    "productmanager": "pm",
+    "k8s": "kubernetes",
+}
+
+
+def _normalize_token(token: str) -> str:
+    cleaned = re.sub(r"[^0-9A-Za-z가-힣]+", "", token.lower()).strip()
+    if not cleaned:
+        return ""
+    return _SYNONYM_CANONICAL.get(cleaned, cleaned)
+
+
+@lru_cache(maxsize=1)
+def _get_kiwi():
+    try:
+        from kiwipiepy import Kiwi
+    except ModuleNotFoundError:
+        return None
+    return Kiwi()
+
+
+def _tokenize(text: str) -> set[str]:
+    kiwi = _get_kiwi()
+    if kiwi is not None:
+        tokens: set[str] = set()
+        for token in kiwi.tokenize(text):
+            norm = _normalize_token(token.form)
+            if norm:
+                tokens.add(norm)
+        return tokens
+    rough = re.findall(r"[0-9A-Za-z가-힣]+", text.lower())
+    return {norm for token in rough if (norm := _normalize_token(token))}
+
+
+def _expand_keyword_aliases(keyword: str) -> set[str]:
+    base = _normalize_token(keyword)
+    if not base:
+        return set()
+    aliases: dict[str, set[str]] = {
+        "database": {"database", "db", "rdbms", "mysql", "postgres", "postgresql"},
+        "sql": {"sql", "mysql", "postgres", "postgresql"},
+        "fastapi": {"fastapi", "fast-api"},
+        "백엔드": {"백엔드", "backend", "back-end"},
+    }
+    for canonical, words in aliases.items():
+        if base in words:
+            return {_normalize_token(item) for item in words}
+    return {base}
+
+
 @tool
 def resume_keyword_match_score(resume_text: str, target_role: str) -> str:
     """Estimate keyword match score of a resume for a target role."""
     key, role_keywords, _ = _infer_role_keywords(target_role)
-    tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", resume_text.lower()))
-    matched = [kw for kw in role_keywords if kw.lower() in tokens]
+    tokens = _tokenize(resume_text)
+    matched: list[str] = []
+    for keyword in role_keywords:
+        aliases = _expand_keyword_aliases(keyword)
+        if aliases & tokens:
+            matched.append(keyword)
     score = int((len(matched) / max(len(role_keywords), 1)) * 100)
     payload = {
         "target_role": target_role,
@@ -84,16 +150,18 @@ def interview_question_bank(target_role: str) -> str:
 def jd_resume_gap_score(jd_text: str, resume_text: str, target_role: str) -> str:
     """Quantify JD-Resume gap with required/preferred keyword matching."""
     _, required_keywords, preferred_keywords = _infer_role_keywords(target_role)
-    jd_tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", jd_text.lower()))
-    resume_tokens = set(re.findall(r"[0-9A-Za-z가-힣]+", resume_text.lower()))
+    jd_tokens = _tokenize(jd_text)
+    resume_tokens = _tokenize(resume_text)
 
-    jd_required = [kw for kw in required_keywords if kw.lower() in jd_tokens] or required_keywords
-    jd_preferred = [kw for kw in preferred_keywords if kw.lower() in jd_tokens]
+    jd_required = [
+        kw for kw in required_keywords if _expand_keyword_aliases(kw) & jd_tokens
+    ] or required_keywords
+    jd_preferred = [kw for kw in preferred_keywords if _expand_keyword_aliases(kw) & jd_tokens]
 
-    matched_required = [kw for kw in jd_required if kw.lower() in resume_tokens]
-    missing_required = [kw for kw in jd_required if kw.lower() not in resume_tokens]
-    matched_preferred = [kw for kw in jd_preferred if kw.lower() in resume_tokens]
-    missing_preferred = [kw for kw in jd_preferred if kw.lower() not in resume_tokens]
+    matched_required = [kw for kw in jd_required if _expand_keyword_aliases(kw) & resume_tokens]
+    missing_required = [kw for kw in jd_required if not (_expand_keyword_aliases(kw) & resume_tokens)]
+    matched_preferred = [kw for kw in jd_preferred if _expand_keyword_aliases(kw) & resume_tokens]
+    missing_preferred = [kw for kw in jd_preferred if not (_expand_keyword_aliases(kw) & resume_tokens)]
 
     required_match_rate = round(
         (len(matched_required) / max(len(jd_required), 1)) * 100.0,
