@@ -132,6 +132,34 @@ def _attach_scope_notice(route: str, summary: str) -> str:
     return f"{text} {_scope_notice(route)}".strip()
 
 
+def _compose_core_summary(route: str, answer: dict[str, Any]) -> str:
+    route_key = (route or "full").lower()
+    resume_len = len(list(answer.get("resume_improvements", []) or []))
+    interview_len = len(list(answer.get("interview_preparation", []) or []))
+    plan_len = len(list(answer.get("two_week_plan", []) or []))
+    if route_key == "plan_only":
+        return f"2주 실행 계획 핵심 {max(plan_len, 1)}개를 우선순위 중심으로 정리했습니다."
+    if route_key == "resume_only":
+        return f"이력서 개선 핵심 {max(resume_len, 1)}개를 우선순위로 정리했습니다."
+    if route_key == "interview_only":
+        return f"면접 준비 핵심 {max(interview_len, 1)}개를 질문/답변 방향 중심으로 정리했습니다."
+    return (
+        f"이력서 개선 {max(resume_len, 1)}개, 면접 준비 {max(interview_len, 1)}개, "
+        f"2주 계획 {max(plan_len, 1)}개를 통합 정리했습니다."
+    )
+
+
+def _looks_notice_only(summary: str) -> bool:
+    text = " ".join(str(summary or "").split()).strip()
+    if not text:
+        return True
+    has_notice = "법/세무/노무" in text and ("원문" in text or "최신 공고" in text)
+    if not has_notice:
+        return False
+    core_keywords = ("이력서", "면접", "계획", "핵심", "정리", "액션", "우선순위")
+    return not any(keyword in text for keyword in core_keywords)
+
+
 def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
     route_key = (route or "full").lower()
     summary = str(answer.get("summary", "")).strip()
@@ -140,7 +168,11 @@ def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[
             summary = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
         else:
             summary = "요청에 대한 핵심 요약입니다."
+    if _looks_notice_only(summary):
+        summary = _compose_core_summary(route_key, answer)
     summary = _attach_scope_notice(route_key, summary)
+    if _looks_notice_only(summary):
+        summary = _attach_scope_notice(route_key, _compose_core_summary(route_key, answer))
     if route_key == "plan_only":
         summary = _enforce_plan_only_summary(summary)
     payload = {

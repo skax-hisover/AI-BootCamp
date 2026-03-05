@@ -39,6 +39,20 @@ def test_plan_only_summary_is_clipped_to_one_or_two_sentences() -> None:
     assert normalized["summary"].count(".") <= 2
 
 
+def test_summary_is_not_notice_only_when_model_returns_notice_text() -> None:
+    payload = {
+        "summary": "법/세무/노무 등 비전문 영역은 별도 확인이 필요하며 최신 공고/회사 정책은 반드시 원문 확인이 필요합니다.",
+        "resume_improvements": ["r1", "r2"],
+        "interview_preparation": ["i1", "i2"],
+        "two_week_plan": ["p1", "p2"],
+        "references": [],
+    }
+    normalized = normalize_final_answer_by_route("full", payload)
+    assert "이력서 개선" in normalized["summary"]
+    assert "면접 준비" in normalized["summary"]
+    assert "2주 계획" in normalized["summary"]
+
+
 def test_enforce_final_answer_policy_adds_refs_and_citation() -> None:
     payload = {
         "summary": "요약",
