@@ -53,3 +53,24 @@ def test_rerank_disabled_keeps_base_score_priority() -> None:
         enabled=False,
     )
     assert ranked[0].source == "knowledge.md"
+
+
+def test_rerank_limits_same_source_by_max_per_source() -> None:
+    hits = [
+        SearchHit(content="문서A-1", source="same.md", score=0.9, metadata={"category": "jd"}),
+        SearchHit(content="문서A-2", source="same.md", score=0.88, metadata={"category": "jd"}),
+        SearchHit(content="문서A-3", source="same.md", score=0.87, metadata={"category": "jd"}),
+        SearchHit(content="문서B-1", source="other.md", score=0.7, metadata={"category": "jd"}),
+    ]
+    ranked = rerank_hits(
+        hits=hits,
+        query="백엔드 jd",
+        role_hint="backend, api",
+        route_categories={"jd"},
+        top_k=4,
+        max_per_source=2,
+        provider="heuristic",
+        enabled=True,
+    )
+    same_count = sum(1 for item in ranked if item.source == "same.md")
+    assert same_count <= 2

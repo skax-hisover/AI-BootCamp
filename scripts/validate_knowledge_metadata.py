@@ -17,6 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 KNOWLEDGE_DIR = PROJECT_ROOT / "data" / "knowledge"
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx"}
 REQUIRED_FIELDS = ("collected_at", "source_url", "curator", "license")
+REQUIRED_CATEGORIES = {"job_postings", "jd", "interview_guides", "portfolio_examples"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -25,6 +26,12 @@ def parse_args() -> argparse.Namespace:
         "--strict",
         action="store_true",
         help="Exit with code 1 if any warning is found",
+    )
+    parser.add_argument(
+        "--max-uncategorized-ratio",
+        type=float,
+        default=0.4,
+        help="Warn when uncategorized ratio exceeds this threshold (0~1).",
     )
     return parser.parse_args()
 
@@ -46,11 +53,32 @@ def _is_iso_date(value: str) -> bool:
     return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip()))
 
 
-def validate() -> tuple[list[str], int]:
+def _infer_category(doc: Path) -> str:
+    rel = doc.relative_to(KNOWLEDGE_DIR)
+    if len(rel.parts) > 1:
+        return rel.parts[0]
+    stem = doc.stem.lower()
+    name = doc.name.lower()
+    text = f"{stem} {name}"
+    if any(token in text for token in ("job_posting", "posting", "공고", "채용", "job_market")):
+        return "job_postings"
+    if any(token in text for token in ("jd", "job_description", "직무기술", "job_desc")):
+        return "jd"
+    if any(token in text for token in ("interview", "면접")):
+        return "interview_guides"
+    if any(token in text for token in ("portfolio", "포트폴리오", "resume", "이력서")):
+        return "portfolio_examples"
+    return "uncategorized"
+
+
+def validate(max_uncategorized_ratio: float = 0.4) -> tuple[list[str], int]:
     warnings: list[str] = []
     checked = 0
+    category_distribution: dict[str, int] = {}
     for doc in _iter_knowledge_files(KNOWLEDGE_DIR):
         checked += 1
+        category = _infer_category(doc)
+        category_distribution[category] = category_distribution.get(category, 0) + 1
         meta_path = _meta_path_for(doc)
         rel_doc = doc.relative_to(PROJECT_ROOT).as_posix()
         rel_meta = meta_path.relative_to(PROJECT_ROOT).as_posix()
@@ -90,12 +118,29 @@ def validate() -> tuple[list[str], int]:
                 f"[WARN] source_url should start with http(s):// or internal:// in {rel_meta}"
             )
 
+    total = sum(category_distribution.values())
+    uncategorized_count = category_distribution.get("uncategorized", 0)
+    uncategorized_ratio = (uncategorized_count / total) if total else 0.0
+    if uncategorized_ratio > max(0.0, min(max_uncategorized_ratio, 1.0)):
+        warnings.append(
+            "[WARN] uncategorized ratio exceeds threshold: "
+            f"{uncategorized_ratio:.2%} > {max_uncategorized_ratio:.2%}. "
+            "Move files to category folders or apply naming/category rules."
+        )
+    present_categories = set(category_distribution.keys())
+    missing_required = sorted(REQUIRED_CATEGORIES - present_categories)
+    if missing_required:
+        warnings.append(
+            "[WARN] missing required categories: "
+            f"{', '.join(missing_required)} (present: {sorted(present_categories)})"
+        )
+
     return warnings, checked
 
 
 def main() -> None:
     args = parse_args()
-    warnings, checked = validate()
+    warnings, checked = validate(max_uncategorized_ratio=args.max_uncategorized_ratio)
     print(f"Checked documents: {checked}")
     if warnings:
         for warning in warnings:

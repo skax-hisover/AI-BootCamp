@@ -18,11 +18,17 @@ from typing_extensions import TypedDict
 
 from src.agents.schemas import FinalAnswer, InterviewNotes, PlanNotes, ResumeNotes
 from src.agents.tools import interview_question_bank, jd_resume_gap_score, resume_keyword_match_score
-from src.common import JobPilotError
+from src.common import ErrorCodes, JobPilotError
 from src.config import get_chat_model, load_settings
 from src.retrieval import HybridRetriever, SearchHit, rerank_hits
 from src.utils.memory import SessionMemory
-from src.workflow.contracts import ChatRequest, ChatResponse
+from src.workflow.contracts import (
+    STRUCTURED_OUTPUT_REPAIR_ENABLED,
+    STRUCTURED_OUTPUT_RETRY_MAX,
+    ChatRequest,
+    ChatResponse,
+    enforce_chat_response_contract,
+)
 
 
 class AgentState(TypedDict, total=False):
@@ -41,6 +47,7 @@ class AgentState(TypedDict, total=False):
     interview_notes: dict[str, Any]
     plan_notes: dict[str, Any]
     final_answer: dict[str, Any]
+    node_status: dict[str, Any]
 
 
 class RouteDecision(BaseModel):
@@ -300,6 +307,11 @@ def _normalize_reference_records(references: list[Any] | None) -> list[dict[str,
                     "score": float(item.get("score", 0.0) or 0.0),
                     "category": item.get("category"),
                     "snippet": str(item.get("snippet", "")),
+                    "score_breakdown": (
+                        item.get("score_breakdown")
+                        if isinstance(item.get("score_breakdown"), dict)
+                        else None
+                    ),
                 }
             )
             continue
@@ -315,9 +327,88 @@ def _normalize_reference_records(references: list[Any] | None) -> list[dict[str,
                 "score": 0.0,
                 "category": None,
                 "snippet": text[:120],
+                "score_breakdown": None,
             }
         )
     return normalized
+
+
+def _extract_error_code_from_text(text: str) -> str | None:
+    raw = str(text or "")
+    if not raw:
+        return None
+    matched = re.search(
+        r"(STRUCTURED_OUTPUT_[A-Z_]+|SERVICE_RUNTIME_ERROR|CONFIG_MISSING_ENV)",
+        raw,
+    )
+    if matched:
+        return matched.group(1)
+    return None
+
+
+def _collect_text_values(payload: dict[str, Any]) -> list[str]:
+    texts: list[str] = []
+    for value in payload.values():
+        if isinstance(value, str):
+            texts.append(value)
+        elif isinstance(value, list):
+            texts.extend(str(item) for item in value if isinstance(item, str))
+    return texts
+
+
+def derive_node_status(route: str, state: AgentState) -> dict[str, dict[str, Any]]:
+    """Build partial-failure status for each node without failing whole response."""
+    route_key = (route or "full").lower()
+    run_resume = route_key in {"full", "resume_only"}
+    run_interview = route_key in {"full", "interview_only"}
+    run_plan = route_key in {"full", "plan_only"}
+    node_status: dict[str, dict[str, Any]] = {
+        "supervisor": {"status": "ok", "error_code": None, "detail": None},
+        "rag": {"status": "ok", "error_code": None, "detail": None},
+        "resume": {"status": "skipped", "error_code": None, "detail": None},
+        "interview": {"status": "skipped", "error_code": None, "detail": None},
+        "plan": {"status": "skipped", "error_code": None, "detail": None},
+        "synthesis": {"status": "ok", "error_code": None, "detail": None},
+    }
+    if run_resume:
+        node_status["resume"]["status"] = "ok"
+    if run_interview:
+        node_status["interview"]["status"] = "ok"
+    if run_plan:
+        node_status["plan"]["status"] = "ok"
+
+    def _mark_if_fallback(node_name: str, payload: dict[str, Any] | None) -> None:
+        if not payload:
+            node_status[node_name]["status"] = "degraded"
+            node_status[node_name]["error_code"] = ErrorCodes.STRUCTURED_OUTPUT_CONTRACT_ERROR
+            node_status[node_name]["detail"] = "Node output missing."
+            return
+        for text in _collect_text_values(payload):
+            code = _extract_error_code_from_text(text)
+            if code:
+                node_status[node_name]["status"] = "degraded"
+                node_status[node_name]["error_code"] = code
+                node_status[node_name]["detail"] = text[:240]
+                return
+
+    if run_resume:
+        _mark_if_fallback("resume", state.get("resume_notes"))
+    if run_interview:
+        _mark_if_fallback("interview", state.get("interview_notes"))
+    if run_plan:
+        _mark_if_fallback("plan", state.get("plan_notes"))
+
+    final_answer = state.get("final_answer") or {}
+    if isinstance(final_answer, dict):
+        summary_text = str(final_answer.get("summary", ""))
+        code = _extract_error_code_from_text(summary_text)
+        if code:
+            node_status["synthesis"] = {
+                "status": "degraded",
+                "error_code": code,
+                "detail": summary_text[:240],
+            }
+    return node_status
 
 
 def _make_insufficient_input_item(field_name: str, idx: int) -> str:
@@ -418,6 +509,10 @@ def _run_tool_loop_structured_with_trace(
     model_temperature: float = 0.2,
     system_prompt: str | None = None,
 ) -> tuple[TStructured, list[str]]:
+    # Tool-calling is autonomous here:
+    # 1) bind_tools exposes available tools to the model
+    # 2) model emits tool_calls when it decides tools are needed
+    # 3) loop executes tools and returns ToolMessage for iterative reasoning
     llm = get_chat_model(temperature=model_temperature).bind_tools(tools)
     messages = [HumanMessage(content=prompt)]
     if system_prompt:
@@ -523,6 +618,7 @@ def _needs_citation_rewrite(payload: dict[str, Any], references: list[dict[str, 
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
+    settings = load_settings()
     supervisor_llm = get_chat_model(temperature=0.0)
     rag_planner_llm = get_chat_model(temperature=0.1)
     plan_llm = get_chat_model(temperature=0.15)
@@ -535,8 +631,9 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         "You are Interview Agent. Focus on interview coaching grounded in evidence, "
         "use tools when helpful, and output only schema-compliant Korean results."
     )
-    resume_few_shot = """
-[Few-shot 예시 1]
+    resume_few_shot_bank = {
+        "backend": """
+[Few-shot 예시]
 입력:
 - 목표 직무: 백엔드 개발자
 - 이력서 요약: "Spring 기반 API 개발, 성능 개선 경험 없음"
@@ -545,8 +642,9 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
   1) 성능 개선 지표(응답시간/처리량) 추가
   2) DB 튜닝 사례(인덱스/쿼리 최적화) 명시
   3) 장애 대응 경험과 재발 방지 액션 포함
-
-[Few-shot 예시 2]
+""".strip(),
+        "data": """
+[Few-shot 예시]
 입력:
 - 목표 직무: 데이터 분석가
 - 이력서 요약: "대시보드 제작 경험 위주"
@@ -555,23 +653,100 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
   1) 문제 정의 -> 분석 -> 인사이트 -> 비즈니스 임팩트 흐름으로 재작성
   2) SQL/Python 사용 범위와 자동화 범위 구체화
   3) 지표 개선 수치(예: 전환율 12% 상승) 추가
-""".strip()
+""".strip(),
+        "pm": """
+[Few-shot 예시]
+입력:
+- 목표 직무: PM
+- 이력서 요약: "요구사항 정리 및 일정 관리 경험 위주"
+출력 스타일:
+- 개선 포인트:
+  1) 우선순위 판단 근거(KPI/리스크)를 명시
+  2) 이해관계자 조율 사례를 결과 중심으로 구조화
+  3) 실험/회고 기반 개선 루프를 수치와 함께 제시
+""".strip(),
+    }
 
-    interview_few_shot = """
-[Few-shot 예시 1]
+    interview_few_shot_bank = {
+        "backend": """
+[Few-shot 예시]
 입력: 백엔드 개발자 면접 준비
 출력 스타일:
 - 예상 질문: 대규모 트래픽 환경의 병목 해결 경험?
 - 답변 방향: 병목 식별 -> 대안 비교 -> 적용 결과 수치
 - 피해야 할 패턴: "그냥 캐시 썼다" 식의 근거 없는 답변
-
-[Few-shot 예시 2]
+""".strip(),
+        "pm": """
+[Few-shot 예시]
 입력: PM 면접 준비
 출력 스타일:
 - 예상 질문: 우선순위 충돌 상황 의사결정 사례?
 - 답변 방향: 목표 지표 -> 이해관계자 조율 -> 결과/회고
 - 피해야 할 패턴: 개인 의견만 강조하고 데이터/지표 근거 누락
-""".strip()
+""".strip(),
+        "data": """
+[Few-shot 예시]
+입력: 데이터 분석가 면접 준비
+출력 스타일:
+- 예상 질문: 분석 과제를 어떻게 문제정의부터 설계했는가?
+- 답변 방향: 가설 -> 데이터 수집/정제 -> 지표 설계 -> 결과 임팩트
+- 피해야 할 패턴: 도구 나열만 하고 비즈니스 연결이 없는 답변
+""".strip(),
+    }
+
+    def _few_shot_key(target_role: str) -> str:
+        role = (target_role or "").lower()
+        if "백엔드" in role or "backend" in role:
+            return "backend"
+        if "데이터" in role or "data" in role:
+            return "data"
+        if "pm" in role or "기획" in role or "product" in role:
+            return "pm"
+        return "backend"
+
+    def _select_few_shots(bank: dict[str, str], target_role: str) -> str:
+        max_examples = max(0, int(settings.few_shot_max_examples))
+        if max_examples <= 0:
+            return "없음 (운영 비용 제어를 위해 Few-shot 생략)"
+        primary = _few_shot_key(target_role)
+        ordered = [primary, *[key for key in bank.keys() if key != primary]]
+        selected: list[str] = []
+        for key in ordered[:max_examples]:
+            shot = bank.get(key, "").strip()
+            if shot:
+                selected.append(shot)
+        return "\n\n".join(selected) if selected else "없음"
+
+    def _invoke_structured_with_repair(
+        prompt: str,
+        schema: type[TStructured],
+        base_temperature: float,
+        system_prompt: str | None = None,
+    ) -> TStructured:
+        attempts = max(0, int(STRUCTURED_OUTPUT_RETRY_MAX))
+        last_error: Exception | None = None
+        current_prompt = prompt
+        for attempt in range(attempts + 1):
+            try:
+                parser = get_chat_model(temperature=max(base_temperature - (attempt * 0.1), 0.0)).with_structured_output(schema)
+                if system_prompt:
+                    return parser.invoke(
+                        [SystemMessage(content=system_prompt), HumanMessage(content=current_prompt)]
+                    )
+                return parser.invoke(current_prompt)
+            except Exception as exc:  # noqa: PERF203
+                last_error = exc
+                if attempt >= attempts:
+                    break
+                if STRUCTURED_OUTPUT_REPAIR_ENABLED:
+                    current_prompt = (
+                        f"{prompt}\n\n"
+                        "[JSON_REPAIR]\n"
+                        "직전 응답의 구조화 파싱이 실패했습니다. "
+                        "스키마 필드를 빠짐없이 채우되, 생각 과정 없이 결과만 한국어 JSON으로 다시 작성하세요."
+                    )
+        assert last_error is not None
+        raise last_error
 
     def _format_resume_notes(notes: dict[str, Any]) -> str:
         if not notes:
@@ -1058,6 +1233,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             role_hint=source_hint,
             route_categories=category_filter,
             top_k=retrieval_top_k,
+            max_per_source=settings.rerank_max_per_source,
             provider=settings.rerank_provider,
             enabled=settings.rerank_enabled,
         )
@@ -1082,6 +1258,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 role_hint=source_hint,
                 route_categories=category_filter,
                 top_k=retrieval_top_k,
+                max_per_source=settings.rerank_max_per_source,
                 provider=settings.rerank_provider,
                 enabled=settings.rerank_enabled,
             )
@@ -1100,6 +1277,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                     "chunk_id": hit.metadata.get("chunk_id"),
                     "location": _location_label(hit.metadata),
                     "snippet": hit.content[:120].replace("\n", " "),
+                    "score_breakdown": hit.metadata.get("score_breakdown"),
                 }
             )
 
@@ -1124,12 +1302,11 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         }
 
     def plan_node(state: AgentState) -> AgentState:
-        parser = plan_llm.with_structured_output(PlanNotes)
         resume_notes = _format_resume_notes(state.get("resume_notes", {}))
         interview_notes = _format_interview_notes(state.get("interview_notes", {}))
         try:
-            structured = parser.invoke(
-                f"""
+            structured = _invoke_structured_with_repair(
+                prompt=f"""
 당신은 Plan Agent입니다.
 중요: 답변은 반드시 한국어로만 작성하세요.
 중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
@@ -1159,11 +1336,17 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
 요구사항:
 - priorities, weekly_schedule, validation_checks를 균형 있게 작성
 - evidence_map 필수: key는 계획 항목, value는 근거 번호 목록(예: [1,2])
-"""
+""",
+                schema=PlanNotes,
+                base_temperature=0.15,
             )
             return {"plan_notes": structured.model_dump()}
         except Exception as exc:
-            return {"plan_notes": _fallback_plan_notes(state, f"plan_node fallback: {exc}")}
+            return {
+                "plan_notes": _fallback_plan_notes(
+                    state, f"{ErrorCodes.STRUCTURED_OUTPUT_PLAN_FALLBACK}: {exc}"
+                )
+            }
 
     def resume_node(state: AgentState) -> AgentState:
         has_resume_text = bool((state.get("resume_text") or "").strip())
@@ -1195,13 +1378,12 @@ RAG 근거:
 9) 도구를 호출했다면 도구 결과(JSON)의 score/keywords/missing_required_top을 최소 1회 이상 key_findings 또는 improvement_points에 반영하세요.
 
 [Few-shot]
-{resume_few_shot}
+{_select_few_shots(resume_few_shot_bank, state['target_role'])}
 """
         try:
             if not has_resume_text:
-                parser = get_chat_model(temperature=0.1).with_structured_output(ResumeNotes)
-                structured = parser.invoke(
-                    f"""
+                structured = _invoke_structured_with_repair(
+                    prompt=f"""
 이력서 원문이 없는 상황입니다.
 아래 조건을 반영해 ResumeNotes를 작성하세요.
 - 개인 경력 단정 금지
@@ -1220,7 +1402,9 @@ RAG 근거:
 
 [RAG 근거]
 {state.get('rag_context', '')}
-"""
+""",
+                    schema=ResumeNotes,
+                    base_temperature=0.1,
                 )
             else:
                 structured, tool_outputs = _run_tool_loop_structured_with_trace(
@@ -1247,7 +1431,11 @@ RAG 근거:
                     )
             return {"resume_notes": structured.model_dump()}
         except Exception as exc:
-            return {"resume_notes": _fallback_resume_notes(state, f"resume_node fallback: {exc}")}
+            return {
+                "resume_notes": _fallback_resume_notes(
+                    state, f"{ErrorCodes.STRUCTURED_OUTPUT_RESUME_FALLBACK}: {exc}"
+                )
+            }
 
     def interview_node(state: AgentState) -> AgentState:
         has_resume_text = bool((state.get("resume_text") or "").strip())
@@ -1276,13 +1464,12 @@ RAG 근거:
 9) 도구를 호출했다면 도구 결과(JSON)의 questions를 최소 1회 이상 expected_questions에 반영하세요.
 
 [Few-shot]
-{interview_few_shot}
+{_select_few_shots(interview_few_shot_bank, state['target_role'])}
 """
         try:
             if not has_resume_text:
-                parser = get_chat_model(temperature=0.2).with_structured_output(InterviewNotes)
-                structured = parser.invoke(
-                    f"""
+                structured = _invoke_structured_with_repair(
+                    prompt=f"""
 이력서 원문이 없는 상황입니다.
 아래 조건을 반영해 InterviewNotes를 작성하세요.
 - 개인 이력 단정 금지
@@ -1301,7 +1488,9 @@ RAG 근거:
 
 [RAG 근거]
 {state.get('rag_context', '')}
-"""
+""",
+                    schema=InterviewNotes,
+                    base_temperature=0.2,
                 )
             else:
                 structured, tool_outputs = _run_tool_loop_structured_with_trace(
@@ -1330,12 +1519,11 @@ RAG 근거:
         except Exception as exc:
             return {
                 "interview_notes": _fallback_interview_notes(
-                    state, f"interview_node fallback: {exc}"
+                    state, f"{ErrorCodes.STRUCTURED_OUTPUT_INTERVIEW_FALLBACK}: {exc}"
                 )
             }
 
     def synthesis_node(state: AgentState) -> AgentState:
-        parser_llm = synthesis_llm.with_structured_output(FinalAnswer)
         route = state.get("route", "full")
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
@@ -1355,9 +1543,7 @@ RAG 근거:
             if state.get("plan_notes")
             else "이번 라우트에서는 Plan Agent를 생략했습니다."
         )
-        try:
-            answer = parser_llm.invoke(
-                f"""
+        synthesis_prompt = f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
 생각 과정을 노출하지 말고 결과만 작성하세요.
@@ -1410,11 +1596,16 @@ RAG 근거:
 - input_gap_notice는 필요한 경우에만 짧게 작성하고, two_week_plan에는 실행형 액션만 포함하세요.
 - route별 최소 개수/빈 배열 정책은 후처리에서 강제되므로 우선 의미 일관성에 집중.
 """
+        try:
+            answer = _invoke_structured_with_repair(
+                prompt=synthesis_prompt,
+                schema=FinalAnswer,
+                base_temperature=0.1,
             )
             draft_payload = answer.model_dump()
             if _needs_citation_rewrite(draft_payload, state.get("rag_refs", []) or []):
-                answer = parser_llm.invoke(
-                    f"""
+                answer = _invoke_structured_with_repair(
+                    prompt=f"""
 기존 초안에서 일부 불릿이 references 번호와 연결되지 않았습니다.
 아래 정보를 유지하면서 각 불릿에 최소 1개의 유효 citation([1]~[{len(state.get("rag_refs", []) or [])}])을 연결해 1회 재작성하세요.
 생각 과정을 노출하지 말고 JSON 결과만 출력하세요.
@@ -1424,14 +1615,18 @@ RAG 근거:
 
 [참고 출처]
 {state.get('rag_refs', [])}
-"""
+""",
+                    schema=FinalAnswer,
+                    base_temperature=0.0,
                 )
                 draft_payload = answer.model_dump()
             normalized = _normalize_final_answer_by_route(route, draft_payload)
             normalized = _enforce_final_answer_policy(route, normalized, state)
             return {"final_answer": normalized}
         except Exception as exc:
-            fallback = _fallback_final_answer(state, f"synthesis fallback: {exc}")
+            fallback = _fallback_final_answer(
+                state, f"{ErrorCodes.STRUCTURED_OUTPUT_SYNTHESIS_FALLBACK}: {exc}"
+            )
             normalized = _normalize_final_answer_by_route(route, fallback)
             normalized = _enforce_final_answer_policy(route, normalized, state)
             return {"final_answer": normalized}
@@ -1583,7 +1778,10 @@ class JobPilotService:
     def _upsert_graph_state_cache(self, req: ChatRequest, result: AgentState) -> None:
         if not self.settings.graph_state_cache_enabled:
             return
-        payload = {
+        route = str(result.get("route", "full"))
+        node_status = derive_node_status(route, result)
+        payload = enforce_chat_response_contract(
+            {
             "summary": result.get("final_answer", {}).get("summary", ""),
             "resume_improvements": result.get("final_answer", {}).get("resume_improvements", []),
             "interview_preparation": result.get("final_answer", {}).get("interview_preparation", []),
@@ -1595,8 +1793,10 @@ class JobPilotService:
             "route": result.get("route"),
             "routing_reason": result.get("routing_reason"),
             "rag_low_confidence": result.get("rag_low_confidence"),
+            "node_status": node_status,
             "cached_state_hit": False,
-        }
+            }
+        )
         with self.graph_state_cache_lock:
             cache = self._load_graph_state_cache()
             cache[req.session_id] = {
@@ -1614,7 +1814,10 @@ class JobPilotService:
                     cached_payload.get("references", [])
                 )
                 cached_payload["cached_state_hit"] = True
-                response = ChatResponse(session_id=req.session_id, **cached_payload)
+                response = ChatResponse(
+                    session_id=req.session_id,
+                    **enforce_chat_response_contract(cached_payload),
+                )
                 self.memory.add(req.session_id, "assistant", response.summary)
                 return response
 
@@ -1629,8 +1832,17 @@ class JobPilotService:
                 state,
                 config={"configurable": {"thread_id": req.session_id}},
             )
+            if not isinstance(result, dict) or "final_answer" not in result:
+                raise JobPilotError(
+                    error_code=ErrorCodes.STRUCTURED_OUTPUT_CONTRACT_ERROR,
+                    detail="Missing final_answer in graph result.",
+                    status_code=500,
+                )
             self._upsert_graph_state_cache(req, result)
-            payload = {
+            route = str(result.get("route", "full"))
+            node_status = derive_node_status(route, result)
+            payload = enforce_chat_response_contract(
+                {
                 **result["final_answer"],
                 "references": _normalize_reference_records(
                     result.get("final_answer", {}).get("references", [])
@@ -1638,8 +1850,10 @@ class JobPilotService:
                 "route": result.get("route"),
                 "routing_reason": result.get("routing_reason"),
                 "rag_low_confidence": result.get("rag_low_confidence"),
+                "node_status": node_status,
                 "cached_state_hit": False,
-            }
+                }
+            )
             response = ChatResponse(session_id=req.session_id, **payload)
 
             self.memory.add(req.session_id, "assistant", response.summary)
@@ -1648,7 +1862,7 @@ class JobPilotService:
             raise
         except Exception as exc:
             raise JobPilotError(
-                error_code="SERVICE_RUNTIME_ERROR",
+                error_code=ErrorCodes.SERVICE_RUNTIME_ERROR,
                 detail=f"JobPilot service failed: {exc}",
                 status_code=500,
             ) from exc

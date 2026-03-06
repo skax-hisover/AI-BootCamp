@@ -1,6 +1,6 @@
 """Common package exports."""
 
-from src.common.errors import JobPilotError
+from src.common.errors import ErrorCodes, JobPilotError
 
-__all__ = ["JobPilotError"]
+__all__ = ["JobPilotError", "ErrorCodes"]
 

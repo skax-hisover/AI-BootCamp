@@ -106,6 +106,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "a
   - [ ] 업로드 반영 방식(`덮어쓰기/추가하기`) 전환 시 이력서/JD 텍스트가 의도한 방식으로 반영되고 중복 누적이 발생하지 않는지 확인
   - [ ] 응답 요약(summary)에 책임 한계 고지 문구(법/세무/노무 비전문 영역 제외 + 최신 공고/회사 정책 원문 확인)가 포함되는지 확인
   - [ ] 맥락형 질의(예: "이전 대화 기준으로 다시") 실행 시 `cached_state_hit=false`로 캐시 우회가 동작하는지(디버그 메타 표시 ON 기준) 확인
+  - [ ] 디버그 메타에서 `node_status`가 노드별(`ok/degraded/skipped`)로 표시되고, 부분 실패 시 `error_code/detail`이 노출되는지 확인
   - [ ] (선택) `인덱스 사전 빌드/로드` 버튼 정상 동작
   - [ ] (선택) `지식 문서 로드 실패 요약` 버튼 클릭 시 인덱싱 실패 파일 목록/오류가 표시되는지 확인
   - [ ] (선택) 기록 저장 OFF/PII 마스킹 옵션 동작 확인
@@ -135,5 +136,6 @@ python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_quer
 - [ ] `docs/evidence/agent_execution_log.md` 최신화
 - [ ] `docs/evidence/agent_final_answer.json` 최신화
 - [ ] Streamlit 캡처 준비: `docs/evidence/streamlit_main_capture.png`
+- [ ] `.env` 제출 안전 점검: `python scripts/check_env_submission_safety.py --strict` 실행 후 경고가 없거나, `.env`는 제출물에서 제외했는지 확인
 - [ ] (선택) 지표 자동검증 실행 결과 캡처 첨부
 

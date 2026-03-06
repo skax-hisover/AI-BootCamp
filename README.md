@@ -2,6 +2,17 @@
 
 JobPilot AI는 취업/이직 준비를 위한 End-to-End 멀티 에이전트 서비스입니다.
 
+## 실행/경로 규약
+
+- 모든 명령은 `final-project` 루트를 현재 작업 디렉토리로 두고 실행합니다.
+- PowerShell 예시:
+
+```powershell
+Set-Location "D:\AI-BootCamp\final-project"
+```
+
+- 문서에 표시된 상대 경로(`scripts/...`, `data/...`, `docs/...`, `src/...`)는 모두 위 루트 기준입니다.
+
 ## 처음 실행 3단계
 
 1. `.env` 설정: `Copy-Item .env.example .env` 후 `AOAI_*` 값 입력
@@ -26,10 +37,12 @@ JobPilot AI는 취업/이직 준비를 위한 End-to-End 멀티 에이전트 서
 - **근거 연결성 강화**: Resume/Interview notes에 `evidence_map` 포함, 최종 불릿에 citation(`[1][2]`) 스타일 적용
 - **그래프 체크포인팅**: LangGraph checkpointer와 `thread_id=session_id` 연동(실행 상태 복원 기반)
 - **체크포인터 역할 분리**: `MemorySaver`는 프로세스 내 런타임 복원용, 재시작 이후 영속 복원은 `session_memory.json`/`graph_state_cache.json`이 담당
+- **메모리 정책 단일화**: `session_memory.json`은 대화 턴만 저장하고, 큰 입력/노드 상태는 저장하지 않으며 그래프 결과 재사용은 `graph_state_cache.json`으로 분리
 - **라우팅 안정화**: Supervisor에서 "제외/전용" 키워드 1차 휴리스틱 라우팅 후, 미해당 케이스만 LLM 라우팅으로 처리
 - **그래프 상태 재사용 캐시**: 파일 기반 invoke 캐시(`graph_state_cache.json` + lock)로 동일 요청 재실행 시 재시작 후에도 결과 재사용
 - **JD-이력서 갭 도구**: `jd_resume_gap_score`(필수/우대 키워드 매칭률 + 누락 Top-N) 추가 및 Resume Agent tool loop 연동
-- **선택형 신뢰도 메타데이터**: `ChatResponse`에 `route/routing_reason/rag_low_confidence/cached_state_hit` 포함, Streamlit 디버그 토글로 표시 가능
+- **선택형 신뢰도 메타데이터**: `ChatResponse`에 `route/routing_reason/rag_low_confidence/cached_state_hit/node_status` 포함, Streamlit 디버그 토글로 표시 가능
+- **Tool Calling 능동성 명시**: `engine.py::_run_tool_loop_structured_with_trace`에서 `bind_tools(...)`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 다중 스텝 실행
 - **동시성 보호**: SessionMemory read/write 구간에 파일 락(`session_memory.json.lock`) 적용
 - **서비스 패키징**: FastAPI 백엔드 + Streamlit UI
 - **안정성**: API 레벨 예외 처리를 통한 사용자 친화적 오류 응답
@@ -59,6 +72,7 @@ JobPilot AI는 취업/이직 준비를 위한 End-to-End 멀티 에이전트 서
 - [Evidence - Final Answer JSON](./docs/evidence/agent_final_answer.json)
 - [Evidence - E2E Test Checklist](./docs/evidence/e2e_test_checklist.md)
 - [Evidence Generator Script](./scripts/generate_submission_evidence.py)
+- [Env Submission Safety Check](./scripts/check_env_submission_safety.py)
 - [Differentiation Metrics Evaluator](./scripts/evaluate_differentiation_metrics.py)
 
 ## 환경 설정
@@ -95,8 +109,10 @@ Copy-Item .env.example .env
 - `EPHEMERAL_JD_BASE_SCORE` (선택, 기본 `0.42`; 업로드 JD 임시 근거 기본 점수)
 - `EPHEMERAL_RESUME_BASE_SCORE` (선택, 기본 `0.36`; 업로드 이력서 임시 근거 기본 점수)
 - `EPHEMERAL_OVERLAP_WEIGHT` (선택, 기본 `0.35`; 임시 근거 점수에 lexical overlap 반영 비율)
+- `FEW_SHOT_MAX_EXAMPLES` (선택, 기본 `1`; 직무별 Few-shot 주입 개수 상한, 0이면 Few-shot 생략)
 - `RERANK_ENABLED` (선택, 기본 `true`; 전용 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 `heuristic`; `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
+- `RERANK_MAX_PER_SOURCE` (선택, 기본 `2`; top-k 내 동일 source 문서 최대 청크 수)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
 
@@ -132,7 +148,7 @@ Copy-Item .env.example .env
 #### 메타데이터 검증(선택, 강제 모드 지원)
 
 ```powershell
-python scripts/validate_knowledge_metadata.py --strict
+python scripts/validate_knowledge_metadata.py --strict --max-uncategorized-ratio 0.4
 ```
 
 - `*.meta.json` 사이드카 파일 기준으로 필수 필드(`collected_at/source_url/curator/license`)를 검증합니다.
@@ -173,6 +189,7 @@ python scripts/run_streamlit.py
 - `다시 불러오기`로 질문/직무/이력서/JD/이전 결과를 복원할 수 있습니다.
 - 사이드바에 "인덱스 사전 빌드/로드" 및 개인정보 옵션(기록 저장 토글, PII 마스킹 토글)이 있습니다.
 - 사이드바 "지식 문서 로드 실패 요약" 버튼으로 인덱싱 중 실패한 파일 목록(`retriever_meta.json`)을 확인할 수 있습니다.
+- 디버그 모드에서 references의 `score_breakdown`(vector/bm25/fused/penalty/rerank 기여)을 확인할 수 있습니다.
 - RAG 인덱스는 디스크 캐시를 사용하므로 첫 실행은 느릴 수 있고 이후 실행은 빨라집니다.
 - 대용량 입력 방어 적용: 입력창 실시간 카운터(`max_chars`) + 질문/이력서 하드 제한 + 사이드바 이력서 자동 압축 옵션
 

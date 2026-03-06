@@ -14,6 +14,7 @@ from filelock import FileLock
 
 from src.common import JobPilotError
 from src.config import load_settings
+from src.ui.input_merge import merge_uploaded_text
 from src.utils.pii import mask_pii_payload
 from src.workflow import ChatRequest, JobPilotService
 
@@ -157,16 +158,6 @@ def _compress_long_text(text: str, target_chars: int) -> tuple[str, bool]:
     tail = max(target_chars - head, 0)
     compressed = f"{text[:head]}\n\n... [중간 내용 생략] ...\n\n{text[-tail:]}"
     return compressed, True
-
-
-def _merge_uploaded_text(existing: str, uploaded: str, mode: str) -> str:
-    existing_clean = (existing or "").strip()
-    uploaded_clean = (uploaded or "").strip()
-    if not uploaded_clean:
-        return existing or ""
-    if mode == "추가하기" and existing_clean:
-        return f"{existing_clean}\n\n{uploaded_clean}".strip()
-    return uploaded_clean
 
 
 def _upload_signature(uploaded_file) -> str:
@@ -421,7 +412,7 @@ def run() -> None:
                     if compressed:
                         st.info("업로드 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
                 st.success(f"파일 분석 완료: {uploaded_resume.name}")
-                st.session_state.resume_text_input = _merge_uploaded_text(
+                st.session_state.resume_text_input = merge_uploaded_text(
                     st.session_state.resume_text_input,
                     extracted_resume,
                     st.session_state.upload_apply_mode,
@@ -443,7 +434,7 @@ def run() -> None:
                     if compressed:
                         st.info("JD/공고 텍스트가 길어 자동 압축(앞/뒤 중심)되었습니다.")
                 st.success(f"JD 파일 분석 완료: {uploaded_jd.name}")
-                st.session_state.jd_text_input = _merge_uploaded_text(
+                st.session_state.jd_text_input = merge_uploaded_text(
                     st.session_state.jd_text_input,
                     extracted_jd,
                     st.session_state.upload_apply_mode,
@@ -616,6 +607,10 @@ def run() -> None:
                     snippet = str(item.get("snippet", "")).strip()
                     if snippet:
                         st.caption(f"snippet: {snippet}")
+                    if st.session_state.show_debug_meta:
+                        breakdown = item.get("score_breakdown")
+                        if isinstance(breakdown, dict) and breakdown:
+                            st.caption(f"score_breakdown: {breakdown}")
                 else:
                     st.markdown(f"- {item}")
         if st.session_state.show_debug_meta:
@@ -624,6 +619,9 @@ def run() -> None:
                 st.write(f"- routing_reason: {latest.get('routing_reason', 'n/a')}")
                 st.write(f"- rag_low_confidence: `{latest.get('rag_low_confidence', 'n/a')}`")
                 st.write(f"- cached_state_hit: `{latest.get('cached_state_hit', False)}`")
+                node_status = latest.get("node_status")
+                if isinstance(node_status, dict):
+                    st.write(f"- node_status: `{node_status}`")
 
 
 if __name__ == "__main__":

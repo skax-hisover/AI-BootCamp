@@ -18,6 +18,7 @@ def rerank_hits(
     role_hint: str,
     route_categories: set[str] | None = None,
     top_k: int = 4,
+    max_per_source: int = 2,
     provider: str = "heuristic",
     enabled: bool = True,
 ) -> list[Any]:
@@ -60,9 +61,34 @@ def rerank_hits(
         upload_boost = 0.12 if source_type == "jd_upload" else (0.08 if source_type == "resume_upload" else 0.0)
 
         new_score = round(base_score + role_boost + category_boost + lexical_boost + upload_boost, 4)
+        score_breakdown = metadata.get("score_breakdown")
+        if isinstance(score_breakdown, dict):
+            metadata["score_breakdown"] = {
+                **score_breakdown,
+                "rerank_role_boost": round(role_boost, 4),
+                "rerank_category_boost": round(category_boost, 4),
+                "rerank_lexical_boost": round(lexical_boost, 4),
+                "rerank_upload_boost": round(upload_boost, 4),
+                "final_post_rerank": round(new_score, 4),
+            }
         hit_kwargs = asdict(hit)
         hit_kwargs["score"] = new_score
+        hit_kwargs["metadata"] = metadata
         rescored.append(type(hit)(**hit_kwargs))
 
     rescored.sort(key=lambda item: float(getattr(item, "score", 0.0)), reverse=True)
-    return rescored[:top_k]
+
+    if max_per_source <= 0:
+        max_per_source = 1
+    deduped: list[Any] = []
+    source_counter: dict[str, int] = {}
+    for hit in rescored:
+        source = str(getattr(hit, "source", "unknown"))
+        count = source_counter.get(source, 0)
+        if count >= max_per_source:
+            continue
+        source_counter[source] = count + 1
+        deduped.append(hit)
+        if len(deduped) >= top_k:
+            break
+    return deduped[:top_k]

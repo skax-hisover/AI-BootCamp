@@ -467,7 +467,15 @@ class HybridRetriever:
                 if lowered_filter and category not in lowered_filter:
                     continue
             penalty = self._query_doc_length_penalty(query, doc.page_content)
-            rescored.append((idx, score * penalty))
+            final_score = score * penalty
+            doc.metadata["score_breakdown"] = {
+                "vector": round(float(vector_scores.get(idx, 0.0)), 4),
+                "bm25": round(float(bm25_scores.get(idx, 0.0)), 4),
+                "fused": round(float(score), 4),
+                "length_penalty": round(float(penalty), 4),
+                "final_pre_rerank": round(float(final_score), 4),
+            }
+            rescored.append((idx, final_score))
 
         ranked = sorted(rescored, key=lambda x: x[1], reverse=True)
         hits: list[SearchHit] = []

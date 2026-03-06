@@ -1,4 +1,11 @@
-"""Tools used by specialist agents."""
+"""Tools used by specialist agents.
+
+These functions are exposed as LangChain tools via `@tool`.
+Actual execution is *agentic* (LLM-selected), not manual:
+- nodes provide a tool list to `model.bind_tools([...])`
+- the model decides whether/which tool to call
+- tool outputs are returned as JSON strings for deterministic parsing/reflection checks
+"""
 
 from __future__ import annotations
 

@@ -45,6 +45,10 @@ class ReferenceItem(BaseModel):
     score: float = Field(default=0.0, description="검색 점수 (0~1)")
     category: str | None = Field(default=None, description="문서 카테고리")
     snippet: str = Field(default="", description="청크 내용 요약")
+    score_breakdown: dict[str, float] | None = Field(
+        default=None,
+        description="점수 분해 정보(vector/bm25/fused/penalty/rerank boosts)",
+    )
 
 
 class FinalAnswer(BaseModel):

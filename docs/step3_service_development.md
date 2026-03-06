@@ -64,8 +64,10 @@ pip install -r requirements-final.txt
 - `EPHEMERAL_JD_BASE_SCORE` (선택, 기본 0.42 / 업로드 JD 임시 근거 기본 점수)
 - `EPHEMERAL_RESUME_BASE_SCORE` (선택, 기본 0.36 / 업로드 이력서 임시 근거 기본 점수)
 - `EPHEMERAL_OVERLAP_WEIGHT` (선택, 기본 0.35 / 임시 근거 점수에 lexical overlap 반영 비율)
+- `FEW_SHOT_MAX_EXAMPLES` (선택, 기본 1 / 직무별 Few-shot 주입 개수 상한)
 - `RERANK_ENABLED` (선택, 기본 true / 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
+- `RERANK_MAX_PER_SOURCE` (선택, 기본 2 / top-k 내 동일 source 문서 최대 청크 수)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회)
 
@@ -167,10 +169,12 @@ python scripts/validate_knowledge_metadata.py --strict
 - RAG 인덱스 영속화: `FAISS.save_local/load_local` + 청크/시그니처 메타 저장으로 재시작 시 인덱스 재사용
 - 인덱스 무효화 안정성 강화: corpus signature에 파일 fingerprint 반영 + `INDEX_FORCE_REBUILD` 옵션 지원
 - 검색 품질 보강: 길이 페널티 리랭킹, 동일 파일 청크 수 제한(다양성), 카테고리 필터 파라미터 지원
+- 검색 다양성 강화: `rerank_hits` 단계에서 source당 최대 청크 수(`RERANK_MAX_PER_SOURCE`)를 적용해 references 중복을 완화
 - 필터 내구성 보강: route-aware category filter 결과가 비는 경우 무필터 재검색 fallback으로 근거 회수율 개선
 - FAISS 캐시 로드 안전성 보강: `retriever_meta.json.cache_hashes`와 `index.faiss/index.pkl` SHA-256 검증이 통과한 경우에만 캐시 로드를 허용
 - 메타데이터 강화: PDF 페이지 번호, DOCX 문단 번호, XLSX 시트/행 정보를 컨텍스트 및 refs에 노출
 - references 추적성 강화: rank/source/location/chunk_id/snippet 정보를 포함한 문자열 포맷으로 citation 연결성 향상
+- 점수 해석성 강화: references에 `score_breakdown`(vector/bm25/fused/length penalty/rerank boosts) 메타를 포함해 디버그 튜닝 근거를 제공
 - references 타입 정렬: `FinalAnswer.references`와 `ChatResponse.references`를 구조화 객체 목록으로 통일해 synthesis 단계 타입 불일치 리스크를 완화
 - 한국어 BM25 개선: kiwi/konlpy 형태소 분석 옵션(설치 시 자동 활용), 미설치 시 조사 제거 기반 fallback 토크나이저 사용
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
@@ -183,7 +187,9 @@ python scripts/validate_knowledge_metadata.py --strict
 - 캐시 안전장치 추가: `GRAPH_STATE_CACHE_ENABLED`, `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
 - 도구 도메인 특화 강화: `jd_resume_gap_score` 도구를 추가해 JD 필수/우대 키워드 매칭률과 누락 역량 top-N을 Resume Agent가 정량 근거로 반영
 - 도구 매칭 신뢰도 보강: `tools.py`에 kiwi 토크나이저(설치 시) + 동의어 정규화(`RDBMS↔DB`, `Fast-API↔fastapi` 등)를 적용해 표기 변형에 대한 강건성 향상
-- 디버그 신뢰도 노출 확장: `ChatResponse`에 `route`, `routing_reason`, `rag_low_confidence`, `cached_state_hit` 옵션 필드를 추가하고 Streamlit에서 선택적으로 표시
+- Tool Calling 진입점 명확화: `_run_tool_loop_structured_with_trace()`에서 `bind_tools()`로 도구 목록을 모델에 주입하고 `tool_calls`를 모델이 자율 선택하는 흐름을 코드 주석으로 명시
+- 디버그 신뢰도 노출 확장: `ChatResponse`에 `route`, `routing_reason`, `rag_low_confidence`, `cached_state_hit`, `node_status` 옵션 필드를 추가하고 Streamlit에서 선택적으로 표시
+- 노드 부분 실패 격리: Resume/Interview/Plan/Synthesis 중 일부가 fallback(degraded)되어도 전체 응답은 유지하고 `node_status`로 실패 노드와 `error_code`를 전달
 - API 에러 계약 단순화: FastAPI `exception_handler`로 `JobPilotError`를 최상위 `{error_code, detail}` 형태로 직렬화해 클라이언트 파싱 복잡도 완화
 - UI route-aware 안내 보강: 비활성 섹션을 숨기는 대신 라우트별 생략 안내 문구(예: resume_only에서 면접/플랜 생략)를 조건부 표시
 - 동시성 범위 확장: `ui_input_history.json` 로드/저장에도 파일 락(`ui_input_history.json.lock`)을 적용해 멀티세션 경합 내구성 강화

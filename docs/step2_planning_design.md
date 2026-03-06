@@ -34,6 +34,7 @@
   - 근거 포함률: 최종 응답에서 `references`가 1개 이상 포함된 비율과, 근거-본문 의미 일치 여부(수기 체크리스트) 측정
   - 실행 플랜 품질: `two_week_plan` 항목의 실행 가능성(구체 행동/기한/우선순위 포함 여부) 점수화(예: 5점 척도) 비교
   - 자동화 경로: `scripts/evaluate_differentiation_metrics.py` + `data/eval/sample_queries.json`로 배치 평가(임계치 미달 시 실패 코드 반환)
+  - 경계 조건 운영 원칙: 샘플 질의셋은 고정 라벨 케이스(`resume_only/interview_only/plan_only/full`)와 무라벨 모호 질의를 혼합해, 라우팅 안정성과 실서비스 유사성을 함께 점검
 
 ### **1.3 대상 사용자 및 기대 사용자 경험(UX)**
 
@@ -58,6 +59,7 @@
 - **고품질 응답 전략(Few-shot + 근거 기반 요약)**  
   직무별 예시 답변(Few-shot) + 근거 문장/출처 기반 요약 + 금지 규칙(근거 없는 단정 금지, 생각 과정 비노출)
   - Tool 활용 실효성 강화: 도구 출력은 JSON(점수/키워드/질문 배열)으로 표준화하고, Agent가 이를 최소 1회 이상 본문에 반영하도록 지시
+  - 운영 비용 제어: Few-shot은 직무별 최소 예시만 선택 주입(`FEW_SHOT_MAX_EXAMPLES`)하고, 확장 예시는 지식문서(RAG exemplar)로 관리해 토큰 비용을 제한
 
 - **출력 구조화 템플릿 정의**  
   JSON 스키마 기반 출력(요약, 강점/약점, 개선안, 근거 출처, 다음 액션)
@@ -65,6 +67,7 @@
   - 라우트 최소 개수 정책: `resume_only/interview_only`는 `two_week_plan` 최소 개수를 0으로 두어 "플랜 제외" 시나리오와 일치
   - 요약 정책 통일: `plan_only`를 포함한 모든 라우트에서 `summary`는 항상 제공하며, `plan_only`는 1~2문장으로 짧게 유지
   - 근거 추적 강화: 중간 산출물에 `evidence_map`(항목 -> 근거 chunk 번호)과 최종 액션 불릿의 citation(`[1][2]`) 표기를 요구해 근거-결론 연결성을 명시
+  - 코드 계약 보강: 파싱 실패 시 재시도(temperature 하향 + JSON repair 지시) 후 최소 스키마 강제(`enforce_chat_response_contract`)로 UI/API 계약 안정성 확보, 관련 에러 코드는 `src/common/errors.py`에 고정
 
 - **사용자 유형/상황별 프롬프트 분기**  
   신입/경력, 직무(백엔드/데이터/PM), 목표 회사 수준(대기업/스타트업)에 따라 프롬프트 분기
@@ -105,8 +108,10 @@
   - 카테고리 품질 진단: 인덱스 빌드 시 카테고리 분포/`uncategorized` 비중을 점검하고, 비중 과다 또는 필수 카테고리 누락 시 경고와 진단 메타를 `retriever_meta.json`에 기록
   - 루트 문서 자동 분류: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화(운영은 카테고리 하위 폴더 배치를 우선 권장)
   - 리랭크 확장성 분리: 휴리스틱 리랭킹을 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정으로 전략 on/off 및 교체 포인트를 표준화
+  - 검색 다양성 제약: `RERANK_MAX_PER_SOURCE`로 top-k 내 동일 source 문서 청크 수를 제한해 references 중복을 완화
   - 업로드 입력 근거 편입: `jd_text/resume_text`를 임시 청크(ephemeral evidence)로 생성해 검색 후보에 혼합하여 공고-이력서 갭 분석의 직접 근거성을 강화
   - 임시 근거 점수 파라미터화: 업로드 텍스트 점수는 `EPHEMERAL_JD_BASE_SCORE`, `EPHEMERAL_RESUME_BASE_SCORE`, `EPHEMERAL_OVERLAP_WEIGHT`로 분리해 임계치/융합 스케일과 함께 운영 튜닝 가능
+  - 점수 해석성 강화: references에 `score_breakdown`(vector/bm25/fused/penalty/rerank 기여) 메타를 포함해 품질 튜닝 근거를 가시화
 
 - **도메인 지식 범위(출처 유형/라이선스/최신성)**  
   - 출처 유형: 채용공고 요약본, 직무기술서(JD) 정리본, 면접 가이드, 포트폴리오 작성 예시  
@@ -128,7 +133,7 @@
 | `license` | 사용 가능 라이선스/내부 사용 정책 | `CC-BY-4.0`, `internal-use` |
   - 적용 수준 구분:
     - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 중심 로딩(메타 필드 강제 파싱 없음)
-    - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증(`--strict` 시 실패 코드 반환)
+    - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증하고 `--max-uncategorized-ratio` 임계치 초과 시 경고/실패를 강제
 
 - **RAG 안전 정책(신뢰성 설계)**
   - 근거 부족 시 전환: 검색 결과가 부족하거나 신뢰 점수가 낮은 경우, "일반 가이드 기반 조언"으로 전환하고 단정형 표현을 제한
@@ -163,6 +168,8 @@
 
 - **안정성/복원성 확장(운영 관점)**  
   Structured Output 실패 시 노드별 fallback(최소 필드 degrade) 적용, 체크포인터 기반 세션 복원으로 재실행 비용 최소화
+  - 부분 실패 계약: `ChatResponse.node_status`(ok/degraded/skipped, error_code/detail)로 노드별 상태를 명시해 단일 노드 실패가 전체 500으로 전파되지 않도록 설계
+  - Tool Calling 능동성 명시: `_run_tool_loop_structured_with_trace()`에서 `bind_tools()`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 실행
 
 **3. 주요 기능 및 동작 시나리오**
 

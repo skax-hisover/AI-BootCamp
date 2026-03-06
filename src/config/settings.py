@@ -63,12 +63,14 @@ class Settings:
     ephemeral_overlap_weight: float = 0.35
     rerank_enabled: bool = True
     rerank_provider: str = "heuristic"
+    rerank_max_per_source: int = 2
     graph_state_cache_enabled: bool = True
     graph_state_cache_bypass_contextual: bool = True
     session_memory_persist_enabled: bool = True
     session_memory_pii_mask_enabled: bool = False
     ui_history_persist_enabled: bool = True
     ui_history_pii_mask_enabled: bool = False
+    few_shot_max_examples: int = 1
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +103,7 @@ def load_settings() -> Settings:
     ephemeral_overlap_weight = _float_env("EPHEMERAL_OVERLAP_WEIGHT", 0.35)
     rerank_enabled = _bool_env("RERANK_ENABLED", True)
     rerank_provider = (os.getenv("RERANK_PROVIDER") or "heuristic").strip().lower() or "heuristic"
+    rerank_max_per_source = _int_env("RERANK_MAX_PER_SOURCE", 2)
     graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
     graph_state_cache_bypass_contextual = _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True)
     session_memory_persist_enabled = _bool_env(
@@ -116,6 +119,7 @@ def load_settings() -> Settings:
         "UI_HISTORY_PII_MASK",
         _bool_env("PII_MASK_ENABLED", False),
     )
+    few_shot_max_examples = _int_env("FEW_SHOT_MAX_EXAMPLES", 1)
 
     missing = []
     if not endpoint:
@@ -157,10 +161,12 @@ def load_settings() -> Settings:
         ephemeral_overlap_weight=ephemeral_overlap_weight,
         rerank_enabled=rerank_enabled,
         rerank_provider=rerank_provider,
+        rerank_max_per_source=max(1, min(rerank_max_per_source, 5)),
         graph_state_cache_enabled=graph_state_cache_enabled,
         graph_state_cache_bypass_contextual=graph_state_cache_bypass_contextual,
         session_memory_persist_enabled=session_memory_persist_enabled,
         session_memory_pii_mask_enabled=session_memory_pii_mask_enabled,
         ui_history_persist_enabled=ui_history_persist_enabled,
         ui_history_pii_mask_enabled=ui_history_pii_mask_enabled,
+        few_shot_max_examples=max(0, min(few_shot_max_examples, 3)),
     )

@@ -26,6 +26,41 @@
     "resume_text": "",
     "jd_text": "백엔드 개발자 채용: Python, FastAPI, DB 튜닝, 장애 대응",
     "expected_route": "plan_only"
+  },
+  {
+    "query": "면접도 조금 보고 싶고 이력서도 손보고 싶은데, 계획은 너무 길지 않게 정리해줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "FastAPI API 운영, 장애 대응 경험, MySQL 기본 튜닝 경험",
+    "jd_text": "백엔드 개발자 채용: Python, FastAPI, DB 성능 개선, 모니터링, 협업",
+    "expected_route": ""
+  },
+  {
+    "query": "계획은 간단히만 보고 싶고, 이력서/면접은 핵심만 2~3개씩 알려줘.",
+    "target_role": "PM",
+    "resume_text": "신규 기능 릴리즈, 실험 결과 분석, 팀 간 커뮤니케이션 경험",
+    "jd_text": "PM 채용: 로드맵, 우선순위 결정, KPI, 이해관계자 조율",
+    "expected_route": ""
+  },
+  {
+    "query": "이력서는 제외하고 면접 질문/답변 방향만 준비해줘. 2주 계획도 제외.",
+    "target_role": "데이터 분석가",
+    "resume_text": "",
+    "jd_text": "데이터 분석가 채용: SQL, Python, 실험 설계, 대시보드",
+    "expected_route": "interview_only"
+  },
+  {
+    "query": "면접은 제외하고 JD 대비 이력서 갭만 집중해서 정리해줘. 계획은 빼줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "Python/FastAPI 서비스 개발, Docker 배포 경험",
+    "jd_text": "백엔드 개발자 채용: Python, FastAPI, 장애 대응, DB 튜닝, AWS",
+    "expected_route": "resume_only"
+  },
+  {
+    "query": "전체 요약 없이 2주 계획만 다시 작성해줘.",
+    "target_role": "PM",
+    "resume_text": "",
+    "jd_text": "PM 채용: 우선순위, KPI 설계, 조직 커뮤니케이션",
+    "expected_route": "plan_only"
   }
 ]
 

@@ -1,4 +1,14 @@
-"""Session memory store with optional file persistence."""
+"""Session memory store with optional file persistence.
+
+Storage contract (single policy used by API/CLI/Streamlit via JobPilotService):
+- this file (`session_memory.json`): stores only short conversational turns
+  (`role`, `content`) per `session_id` for multi-turn context windows.
+- does NOT store large per-request payloads (resume/jd full text), route outputs,
+  or graph node states.
+- graph-level result cache is handled separately by `graph_state_cache.json`.
+
+In short: SessionMemory = dialogue history; Graph cache/checkpointer = execution state.
+"""
 
 from __future__ import annotations
 

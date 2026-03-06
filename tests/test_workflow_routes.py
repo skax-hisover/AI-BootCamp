@@ -4,6 +4,7 @@ from src.workflow.engine import (
     normalize_final_answer_by_route,
     route_minimums,
 )
+from src.workflow.contracts import enforce_chat_response_contract
 
 
 def test_route_minimums_for_resume_and_interview_only() -> None:
@@ -109,4 +110,29 @@ def test_normalize_final_answer_by_route_cleans_none_notice() -> None:
     }
     normalized = normalize_final_answer_by_route("full", payload)
     assert normalized.get("input_gap_notice") is None
+
+
+def test_enforce_chat_response_contract_fills_min_schema() -> None:
+    payload = enforce_chat_response_contract({"summary": "", "cached_state_hit": "yes"})
+    assert payload["summary"]
+    assert isinstance(payload["resume_improvements"], list)
+    assert isinstance(payload["references"], list)
+    assert payload["cached_state_hit"] is True
+
+
+def test_enforce_chat_response_contract_normalizes_node_status() -> None:
+    payload = enforce_chat_response_contract(
+        {
+            "summary": "ok",
+            "node_status": {
+                "resume": {
+                    "status": "degraded",
+                    "error_code": "STRUCTURED_OUTPUT_RESUME_FALLBACK",
+                    "detail": "fallback used",
+                }
+            },
+        }
+    )
+    assert isinstance(payload["node_status"], dict)
+    assert payload["node_status"]["resume"]["status"] == "degraded"
 
