@@ -1,5 +1,6 @@
 from src.workflow.engine import (
     enforce_final_answer_policy,
+    heuristic_route_from_query,
     normalize_final_answer_by_route,
     route_minimums,
 )
@@ -81,4 +82,31 @@ def test_enforce_final_answer_policy_adds_refs_and_citation() -> None:
     assert all("[1]" in item for item in enforced["resume_improvements"])
     assert len(enforced["two_week_plan"]) >= 4
     assert all("추가 권장 액션" not in item for item in enforced["two_week_plan"])
+    assert all("근거/입력 정보가 부족해 2주 실행계획" not in item for item in enforced["two_week_plan"])
+    assert enforced.get("input_gap_notice")
+
+
+def test_heuristic_route_from_query_respects_explicit_exclusion() -> None:
+    route = heuristic_route_from_query("이력서 개선 포인트만 5개 뽑아줘. 면접 제외, 계획 제외")
+    assert route is not None
+    assert route[0] == "resume_only"
+
+
+def test_heuristic_route_from_query_plan_only_keywords() -> None:
+    route = heuristic_route_from_query("전체 요약 없이 2주 계획만 간단히 작성해줘")
+    assert route is not None
+    assert route[0] == "plan_only"
+
+
+def test_normalize_final_answer_by_route_cleans_none_notice() -> None:
+    payload = {
+        "summary": "요약",
+        "resume_improvements": ["r1"],
+        "interview_preparation": ["i1"],
+        "two_week_plan": ["p1"],
+        "input_gap_notice": None,
+        "references": [],
+    }
+    normalized = normalize_final_answer_by_route("full", payload)
+    assert normalized.get("input_gap_notice") is None
 

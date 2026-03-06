@@ -29,6 +29,7 @@ class ChatResponse(BaseModel):
     resume_improvements: list[str] = Field(default_factory=list)
     interview_preparation: list[str] = Field(default_factory=list)
     two_week_plan: list[str] = Field(default_factory=list)
+    input_gap_notice: str | None = None
     references: list[ReferenceItem] = Field(default_factory=list)
     route: str | None = None
     routing_reason: str | None = None

@@ -17,7 +17,7 @@ from rank_bm25 import BM25Okapi
 
 from src.common import JobPilotError
 from src.config import get_embedding_model, load_settings
-from src.retrieval.documents import chunk_documents, iter_source_files, load_documents
+from src.retrieval.documents import chunk_documents, iter_source_files, load_documents_with_report
 
 
 _FALLBACK_STOPWORDS = {
@@ -166,6 +166,37 @@ def _file_content_fingerprint(path: Path, sample_size: int = 65536) -> str:
     return hasher.hexdigest()
 
 
+def _sha256_file(path: Path) -> str:
+    hasher = hashlib.sha256()
+    with path.open("rb") as file:
+        while True:
+            chunk = file.read(1024 * 1024)
+            if not chunk:
+                break
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+def _faiss_cache_hashes(index_dir: Path) -> dict[str, str] | None:
+    index_file = index_dir / "index.faiss"
+    pkl_file = index_dir / "index.pkl"
+    if not (index_file.exists() and pkl_file.exists()):
+        return None
+    return {
+        "index.faiss": _sha256_file(index_file),
+        "index.pkl": _sha256_file(pkl_file),
+    }
+
+
+def _cache_hashes_match(expected: dict[str, Any], current: dict[str, str] | None) -> bool:
+    if not isinstance(expected, dict) or not current:
+        return False
+    for key, value in current.items():
+        if str(expected.get(key, "")) != value:
+            return False
+    return True
+
+
 def _corpus_signature(paths: list[Path], root: Path) -> str:
     records = []
     for path in sorted(paths):
@@ -260,6 +291,10 @@ class HybridRetriever:
             try:
                 meta = json.loads(meta_path.read_text(encoding="utf-8"))
                 if isinstance(meta, dict) and meta.get("signature") == signature:
+                    expected_hashes = meta.get("cache_hashes", {})
+                    current_hashes = _faiss_cache_hashes(faiss_dir)
+                    if not _cache_hashes_match(expected_hashes, current_hashes):
+                        raise ValueError("FAISS cache hash verification failed.")
                     vector_weight = float(meta.get("vector_weight", settings.vector_weight))
                     bm25_weight = float(meta.get("bm25_weight", settings.bm25_weight))
                     tokenizer_backend = str(meta.get("tokenizer_backend", tokenizer_backend))
@@ -302,7 +337,7 @@ class HybridRetriever:
                 tokenizer_backend=tokenizer_backend,
             )
 
-        docs = load_documents(settings.knowledge_dir)
+        docs, load_failures = load_documents_with_report(settings.knowledge_dir)
         if not docs:
             raise JobPilotError(
                 error_code="KNOWLEDGE_EMPTY",
@@ -343,6 +378,9 @@ class HybridRetriever:
                         settings.bm25_weight,
                     )[1],
                     "tokenizer_backend": tokenizer_backend,
+                    "cache_hashes": _faiss_cache_hashes(faiss_dir),
+                    "document_load_failure_count": len(load_failures),
+                    "document_load_failures": load_failures[:100],
                     **diagnostics,
                 },
                 ensure_ascii=False,

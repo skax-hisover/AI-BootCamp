@@ -80,9 +80,12 @@
   - `Interview Agent`: 예상 질문/답변 코칭  
   - `Plan Agent`: 우선순위/일정/검증 방법 중심 2주 실행 계획 수립  
   - `RAG Agent`: 지식 검색 및 근거 제공(plan_only 포함 모든 라우트에서 최소 근거 확보)
+  - 노드 독립성 구현: Supervisor/RAG/Resume/Interview/Plan/Synthesis 노드별로 모델 온도와 시스템 역할 지시를 분리해 각 노드의 판단 편향을 완화
 
 - **Tool Calling, ReAct, Memory 활용 여부**  
-  Tool Calling(필수), ReAct 스타일 도구 루프(max step 기반 종료), 세션 메모리 + LangGraph Checkpointer(그래프 실행 상태) 적용
+  Tool Calling(필수), ReAct 스타일 도구 루프(max step 기반 종료), 세션 메모리 + LangGraph Checkpointer 적용
+  - 구현 선택 명시: LangGraph Checkpointer는 `MemorySaver`(인메모리)로 같은 프로세스 런타임 내 멀티스텝 복원에 사용
+  - 저장소 역할 분담: 서버 재시작 이후 영속 복원/재사용은 `data/index/session_memory.json`(SessionMemory), `data/index/graph_state_cache.json`(파일 캐시)로 분리 운영
 
 ### **2.3 RAG 구성**
 
@@ -98,9 +101,12 @@
   - 튜닝 포인트 분리: 하이브리드 가중치(`VECTOR_WEIGHT`, `BM25_WEIGHT`)를 설정값으로 분리해 실험/운영에서 빠르게 조정
   - 안전모드 고도화: 검색 결과가 있더라도 최고 점수가 임계치 미만이면(`RAG_EVIDENCE_SCORE_THRESHOLD`) 근거 부족 모드로 전환해 보수적 표현을 우선
   - 내구성 보강: route-aware 카테고리 필터 적용 후 결과가 비면 필터 없이 재검색(fallback)해 근거 누락을 완화
+  - 캐시 로드 안전성: FAISS 캐시 로드시 `retriever_meta.json`에 저장된 `cache_hashes`와 실제 `index.faiss/index.pkl` SHA-256을 대조해 일치할 때만 재사용(불일치 시 재생성)
   - 카테고리 품질 진단: 인덱스 빌드 시 카테고리 분포/`uncategorized` 비중을 점검하고, 비중 과다 또는 필수 카테고리 누락 시 경고와 진단 메타를 `retriever_meta.json`에 기록
+  - 루트 문서 자동 분류: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화(운영은 카테고리 하위 폴더 배치를 우선 권장)
   - 리랭크 확장성 분리: 휴리스틱 리랭킹을 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정으로 전략 on/off 및 교체 포인트를 표준화
   - 업로드 입력 근거 편입: `jd_text/resume_text`를 임시 청크(ephemeral evidence)로 생성해 검색 후보에 혼합하여 공고-이력서 갭 분석의 직접 근거성을 강화
+  - 임시 근거 점수 파라미터화: 업로드 텍스트 점수는 `EPHEMERAL_JD_BASE_SCORE`, `EPHEMERAL_RESUME_BASE_SCORE`, `EPHEMERAL_OVERLAP_WEIGHT`로 분리해 임계치/융합 스케일과 함께 운영 튜닝 가능
 
 - **도메인 지식 범위(출처 유형/라이선스/최신성)**  
   - 출처 유형: 채용공고 요약본, 직무기술서(JD) 정리본, 면접 가이드, 포트폴리오 작성 예시  
@@ -120,6 +126,9 @@
 | `source_url` | 원문 출처 URL(내부 문서는 `internal://...`) | `https://careers.example.com/posting/123` |
 | `curator` | 요약/정리 담당자 또는 팀 | `jobpilot-team` |
 | `license` | 사용 가능 라이선스/내부 사용 정책 | `CC-BY-4.0`, `internal-use` |
+  - 적용 수준 구분:
+    - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 중심 로딩(메타 필드 강제 파싱 없음)
+    - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증(`--strict` 시 실패 코드 반환)
 
 - **RAG 안전 정책(신뢰성 설계)**
   - 근거 부족 시 전환: 검색 결과가 부족하거나 신뢰 점수가 낮은 경우, "일반 가이드 기반 조언"으로 전환하고 단정형 표현을 제한

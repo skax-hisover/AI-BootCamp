@@ -58,6 +58,9 @@ class Settings:
     vector_weight: float = 0.6
     bm25_weight: float = 0.4
     rag_evidence_score_threshold: float = 0.45
+    ephemeral_jd_base_score: float = 0.42
+    ephemeral_resume_base_score: float = 0.36
+    ephemeral_overlap_weight: float = 0.35
     rerank_enabled: bool = True
     rerank_provider: str = "heuristic"
     graph_state_cache_enabled: bool = True
@@ -93,6 +96,9 @@ def load_settings() -> Settings:
     vector_weight = _float_env("VECTOR_WEIGHT", 0.6)
     bm25_weight = _float_env("BM25_WEIGHT", 0.4)
     rag_evidence_score_threshold = _float_env("RAG_EVIDENCE_SCORE_THRESHOLD", 0.45)
+    ephemeral_jd_base_score = _float_env("EPHEMERAL_JD_BASE_SCORE", 0.42)
+    ephemeral_resume_base_score = _float_env("EPHEMERAL_RESUME_BASE_SCORE", 0.36)
+    ephemeral_overlap_weight = _float_env("EPHEMERAL_OVERLAP_WEIGHT", 0.35)
     rerank_enabled = _bool_env("RERANK_ENABLED", True)
     rerank_provider = (os.getenv("RERANK_PROVIDER") or "heuristic").strip().lower() or "heuristic"
     graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
@@ -146,6 +152,9 @@ def load_settings() -> Settings:
         vector_weight=vector_weight,
         bm25_weight=bm25_weight,
         rag_evidence_score_threshold=rag_evidence_score_threshold,
+        ephemeral_jd_base_score=ephemeral_jd_base_score,
+        ephemeral_resume_base_score=ephemeral_resume_base_score,
+        ephemeral_overlap_weight=ephemeral_overlap_weight,
         rerank_enabled=rerank_enabled,
         rerank_provider=rerank_provider,
         graph_state_cache_enabled=graph_state_cache_enabled,

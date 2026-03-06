@@ -37,6 +37,22 @@ def _history_lock_path() -> Path:
     return settings.index_dir / "ui_input_history.json.lock"
 
 
+def _retriever_meta_path() -> Path:
+    settings = load_settings()
+    return settings.index_dir / "retriever_meta.json"
+
+
+def _load_retriever_meta() -> dict:
+    path = _retriever_meta_path()
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _load_persisted_history() -> list[dict]:
     path = _history_file_path()
     lock = FileLock(str(_history_lock_path()))
@@ -160,7 +176,7 @@ def _upload_signature(uploaded_file) -> str:
 
 
 def run() -> None:
-    st.set_page_config(page_title="JobPilot AI", page_icon=":briefcase:", layout="wide")
+    st.set_page_config(page_title="JobPilot AI", page_icon="💼", layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
     st.caption("Resume Agent + Interview Agent + RAG Agent")
     settings = load_settings()
@@ -325,6 +341,30 @@ def run() -> None:
                     get_service.clear()
                     get_service()
                 st.success("인덱스 사전 준비가 완료되었습니다.")
+            if st.button("지식 문서 로드 실패 요약", use_container_width=True):
+                meta = _load_retriever_meta()
+                if not meta:
+                    st.info("retriever_meta.json이 없어 아직 요약을 표시할 수 없습니다. 먼저 인덱스를 빌드/로드하세요.")
+                else:
+                    failures = meta.get("document_load_failures", [])
+                    failure_count = int(meta.get("document_load_failure_count", 0) or 0)
+                    if not isinstance(failures, list):
+                        failures = []
+                    if failure_count <= 0:
+                        st.success("최근 인덱싱 기준 문서 로드 실패가 없습니다.")
+                    else:
+                        st.warning(f"최근 인덱싱에서 문서 로드 실패 {failure_count}건이 감지되었습니다.")
+                        for idx, item in enumerate(failures[:20], start=1):
+                            if not isinstance(item, dict):
+                                continue
+                            file_name = str(item.get("file", "unknown"))
+                            error_text = str(item.get("error", "unknown error"))
+                            st.markdown(f"- [{idx}] `{file_name}`")
+                            st.caption(error_text)
+                        if failure_count > len(failures):
+                            st.caption(
+                                f"메타에는 최대 {len(failures)}건만 저장되며, 전체 실패 건수는 {failure_count}건입니다."
+                            )
             st.caption("첫 실행에서는 인덱스 생성으로 30~90초 이상 소요될 수 있습니다.")
         with st.expander("디버그/신뢰도 표시", expanded=False):
             st.checkbox(
@@ -551,6 +591,11 @@ def run() -> None:
             st.subheader("2주 실행 계획")
             for item in plan_items:
                 st.markdown(f"- {item}")
+            gap_notice = str(latest.get("input_gap_notice", "") or "").strip()
+            if gap_notice.lower() in {"none", "null", "nan"}:
+                gap_notice = ""
+            if gap_notice:
+                st.info(gap_notice)
         elif route in {"resume_only", "interview_only"}:
             st.caption("요청 라우트에 따라 2주 실행 계획 섹션은 생략되었습니다.")
 

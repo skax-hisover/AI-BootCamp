@@ -61,6 +61,9 @@ pip install -r requirements-final.txt
 - `VECTOR_WEIGHT` (선택, 기본 0.6 / 하이브리드 벡터 점수 가중치)
 - `BM25_WEIGHT` (선택, 기본 0.4 / 하이브리드 BM25 점수 가중치)
 - `RAG_EVIDENCE_SCORE_THRESHOLD` (선택, 기본 0.45 / 상위 점수 임계치 미만 시 근거 부족 모드 전환)
+- `EPHEMERAL_JD_BASE_SCORE` (선택, 기본 0.42 / 업로드 JD 임시 근거 기본 점수)
+- `EPHEMERAL_RESUME_BASE_SCORE` (선택, 기본 0.36 / 업로드 이력서 임시 근거 기본 점수)
+- `EPHEMERAL_OVERLAP_WEIGHT` (선택, 기본 0.35 / 임시 근거 점수에 lexical overlap 반영 비율)
 - `RERANK_ENABLED` (선택, 기본 true / 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
@@ -109,6 +112,15 @@ python scripts/run_streamlit.py
 - 지식 범위: `data/knowledge` 내 채용공고, JD, 면접가이드, 포트폴리오 예시 카테고리 문서 중심
 - 라이선스 원칙: 공개 활용 가능 문서/직접 작성 요약본 우선, 저작권 제약 원문은 전문 저장 지양
 - 안전장치: 근거 부족 시 일반 조언으로 전환하고 단정형 표현 제한, 필요 시 문서 업로드 안내
+- 메타데이터 적용 수준 구분:
+  - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 중심 로딩(메타 필드 강제 파싱 없음)
+  - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증(`--strict` 시 실패 코드 반환)
+
+### 메타데이터 검증 실행(선택)
+
+```powershell
+python scripts/validate_knowledge_metadata.py --strict
+```
 
 ## 5) 필수 기술 요소 매핑 표
 
@@ -130,17 +142,21 @@ python scripts/run_streamlit.py
 - 개인정보 옵션 보강: 실행 입력 기록 파일 저장 on/off, 저장 전 이메일/전화번호 마스킹 옵션 추가
 - JD 입력 경로 추가: CLI/UI/워크플로우 전 구간에 `jd_text` 전달 및 프롬프트 반영(공고-이력서 갭 비교 명시)
 - Supervisor 라우팅 고도화: `resume_only/interview_only/full/plan_only` 분류 + LangGraph 조건부 엣지 분기 적용
+- Supervisor 2단 라우팅: "면접 제외/계획 제외/이력서 제외" 등 명시 표현은 1차 휴리스틱으로 우선 반영하고, 그 외는 LLM 라우팅으로 처리
 - Tool loop 가드레일 강화: 최대 N회(기본 4회) 루프 + 동일 tool+args 반복 호출 감지 시 중단 + 도구 라운드 상한 후 강제 요약 전환
 - Tool 출력 구조화: `resume_keyword_match_score`/`interview_question_bank` 결과를 JSON으로 표준화하고, Agent 프롬프트에서 1회 이상 반영 규칙을 명시
 - Plan Agent 분리: `plan_node` 추가, `full/plan_only`에서 실행해 우선순위/일정/검증 방법을 독립적으로 의사결정
 - plan_only 경로 정합성 보강: `plan_only`도 `rag_node(top_k=2 경량)`를 거쳐 근거를 확보한 뒤 Plan Agent/Synthesis로 전달
 - 세션 메모리 영속화: 메모리 JSON 파일 저장/로드로 서버 재시작 후 대화 이력 유지
 - LangGraph Checkpointer 연동: `thread_id=session_id` 기준으로 그래프 실행 상태 복원 기반 마련
+- 체크포인터 역할 분리 명시: `MemorySaver`는 프로세스 내 런타임 복원용, 서버 재시작 이후 복원/재사용은 `session_memory.json` + `graph_state_cache.json`이 담당
 - RAG Agent 강화: 쿼리 리라이트, 직무 힌트 기반 문서 우선순위(스코어 부스팅), route 메타 노트 반영
+- RAG Agent 자율 보강: `rag_low_confidence`일 때 1회 재검색(쿼리 확장 + 무필터 탐색) 후 재랭크하는 로컬 복구 정책 적용
 - RAG 리랭크 레이어 분리: 검색(`HybridRetriever.search`) 이후 `rerank` 확장 포인트 추가(향후 cross-encoder/LLM 리랭커 교체 용이)
 - 중간 산출물 구조화: `ResumeNotes`, `InterviewNotes` 스키마 추가 및 Resume/Interview 노드 structured output 적용
 - 근거 연결성 강화: `ResumeNotes/InterviewNotes`에 `evidence_map` 추가(항목 -> 근거 chunk 번호 매핑)
 - 에이전트 로컬 정책 강화: 이력서 텍스트 미제공 시 Resume/Interview 노드가 갭 분석/공통 질문 중심으로 독립 전환
+- 노드 독립성 강화: Resume/Interview/Plan/Supervisor/RAG 노드별 모델 온도와 시스템 역할 지시를 분리해 의사결정 편향을 완화
 - 오류 내성 강화: Resume/Interview/Synthesis structured output 실패 시 fallback 결과로 degrade 처리
 - route-aware 출력 규칙: `synthesis` 단계에서 라우트별 최소 섹션 규칙 적용(예: `plan_only`는 계획 중심, 불필요 섹션은 빈 배열)
 - 라우트 최소 개수 정렬: `resume_only/interview_only`는 `two_week_plan` 최소 개수를 0으로 조정해 기획 시나리오(플랜 제외)와 일치
@@ -152,8 +168,10 @@ python scripts/run_streamlit.py
 - 인덱스 무효화 안정성 강화: corpus signature에 파일 fingerprint 반영 + `INDEX_FORCE_REBUILD` 옵션 지원
 - 검색 품질 보강: 길이 페널티 리랭킹, 동일 파일 청크 수 제한(다양성), 카테고리 필터 파라미터 지원
 - 필터 내구성 보강: route-aware category filter 결과가 비는 경우 무필터 재검색 fallback으로 근거 회수율 개선
+- FAISS 캐시 로드 안전성 보강: `retriever_meta.json.cache_hashes`와 `index.faiss/index.pkl` SHA-256 검증이 통과한 경우에만 캐시 로드를 허용
 - 메타데이터 강화: PDF 페이지 번호, DOCX 문단 번호, XLSX 시트/행 정보를 컨텍스트 및 refs에 노출
 - references 추적성 강화: rank/source/location/chunk_id/snippet 정보를 포함한 문자열 포맷으로 citation 연결성 향상
+- references 타입 정렬: `FinalAnswer.references`와 `ChatResponse.references`를 구조화 객체 목록으로 통일해 synthesis 단계 타입 불일치 리스크를 완화
 - 한국어 BM25 개선: kiwi/konlpy 형태소 분석 옵션(설치 시 자동 활용), 미설치 시 조사 제거 기반 fallback 토크나이저 사용
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
 - RAG 안전정책 코드 반영: 최고 점수가 `RAG_EVIDENCE_SCORE_THRESHOLD` 미만이면 근거 부족 모드로 전환해 보수적 표현을 우선
@@ -172,6 +190,7 @@ python scripts/run_streamlit.py
 - JD 입력 방어 대칭화: Streamlit에 JD 자동 압축(앞/뒤 유지) 옵션 및 목표 글자 수 설정을 추가해 긴 공고 텍스트 처리 비용을 완화
 - 업로드 UX 보강: 파일 업로드 반영 방식을 `덮어쓰기/추가하기`로 선택 가능하게 하고 업로드 시그니처로 중복 반영(누적 혼선)을 방지
 - Streamlit 오류 가이드 보강: 지식문서 미존재/환경변수 누락 시 사용자 안내 메시지 및 해결 가이드 표시
+- 지식 로드 실패 가시성 보강: 인덱싱 시 문서 로드 실패 목록을 `retriever_meta.json`에 기록하고, Streamlit 사이드바 버튼으로 요약 조회 지원
 - 멀티유저 방어 로직: SessionMemory에 TTL/최대 세션 수 제한 추가(메모리 누적 방지)
 - 대용량 입력 방어: Streamlit에서 질문/이력서 입력란 내부 실시간 카운터(`max_chars`) + 하드 제한 및 긴 이력서 자동 압축(앞/뒤 중심) 옵션 제공
 - 파일 경합 완화: `SessionMemory` 저장/조회 경로에 파일 락 적용(`session_memory.json.lock`)
@@ -181,5 +200,6 @@ python scripts/run_streamlit.py
 - 더미 콘텐츠 완화: 최소 개수 미달 시 `"추가 권장 액션 N"` 대신 근거/입력 부족을 명시하고 경력연차·지원회사·핵심 프로젝트 등 추가 질문을 유도하는 fallback 문구로 대체
 - citation 정합성 자기검증: `synthesis_node`에서 불릿별 citation([1]~[N]) 유효성을 점검하고 미달 시 자기검증 프롬프트로 1회 재작성해 근거-문장 연결성을 강화
 - 데이터 구조 정합성 보강: `data/knowledge/job_postings|jd|interview_guides|portfolio_examples` 예시 폴더/샘플 문서를 추가해 route-aware 카테고리 필터가 실제 데이터에서도 의미 있게 동작하도록 정리
+- 루트 문서 카테고리 보정: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화
 - references 계약 구조화: `ChatResponse.references`를 `{rank, source, chunk_id, location, score, category, snippet}` 객체 리스트로 통일해 UI/후처리 활용성을 개선
 - 지표 증빙 인코딩 안정화: `evaluate_differentiation_metrics.py --output` 옵션으로 UTF-8 저장을 명시 지원해 `metrics_run_output.txt` 깨짐 문제를 예방

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar
 
 from filelock import FileLock
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
@@ -58,6 +58,74 @@ class RagPlan(BaseModel):
 
 
 TStructured = TypeVar("TStructured", bound=BaseModel)
+
+
+def heuristic_route_from_query(user_query: str) -> tuple[str, str] | None:
+    """Apply deterministic exclusions/only-intent routing before LLM router."""
+    text = " ".join(str(user_query or "").lower().split())
+    if not text:
+        return None
+
+    def _has_any(keywords: tuple[str, ...]) -> bool:
+        return any(keyword in text for keyword in keywords)
+
+    resume_only_markers = (
+        "이력서만",
+        "이력서 개선만",
+        "이력서만 봐",
+        "면접 제외",
+        "면접은 제외",
+        "면접 빼",
+        "플랜 제외",
+        "계획 제외",
+        "2주 계획 제외",
+    )
+    interview_only_markers = (
+        "면접만",
+        "면접 질문만",
+        "면접 준비만",
+        "이력서 제외",
+        "이력서는 제외",
+        "이력서 빼",
+        "플랜 제외",
+        "계획 제외",
+        "2주 계획 제외",
+    )
+    plan_only_markers = (
+        "계획만",
+        "플랜만",
+        "2주 계획만",
+        "실행계획만",
+        "실행 계획만",
+        "전체 요약 없이",
+    )
+
+    exclude_resume = _has_any(("이력서 제외", "이력서는 제외", "이력서 빼", "이력서 제외해"))
+    exclude_interview = _has_any(("면접 제외", "면접은 제외", "면접 빼", "면접 제외해"))
+    exclude_plan = _has_any(("플랜 제외", "계획 제외", "2주 계획 제외", "실행계획 제외"))
+    want_resume = _has_any(("이력서", "자소서", "포트폴리오"))
+    want_interview = _has_any(("면접", "질문", "답변"))
+    want_plan = _has_any(("계획", "플랜", "로드맵", "2주"))
+
+    if _has_any(plan_only_markers):
+        return ("plan_only", "휴리스틱 라우팅: 계획 전용 요청 키워드 감지")
+    if _has_any(resume_only_markers) and not want_interview:
+        return ("resume_only", "휴리스틱 라우팅: 이력서 전용/면접 제외 키워드 감지")
+    if _has_any(interview_only_markers) and not want_resume:
+        return ("interview_only", "휴리스틱 라우팅: 면접 전용/이력서 제외 키워드 감지")
+
+    if exclude_interview and exclude_plan and not exclude_resume:
+        return ("resume_only", "휴리스틱 라우팅: 면접/계획 제외 요청")
+    if exclude_resume and exclude_plan and not exclude_interview:
+        return ("interview_only", "휴리스틱 라우팅: 이력서/계획 제외 요청")
+    if exclude_resume and exclude_interview and not exclude_plan:
+        return ("plan_only", "휴리스틱 라우팅: 이력서/면접 제외 요청")
+    if exclude_interview and want_resume and not want_plan:
+        return ("resume_only", "휴리스틱 라우팅: 면접 제외 + 이력서 의도")
+    if exclude_resume and want_interview and not want_plan:
+        return ("interview_only", "휴리스틱 라우팅: 이력서 제외 + 면접 의도")
+
+    return None
 
 
 def route_minimums(route: str) -> dict[str, int]:
@@ -160,6 +228,17 @@ def _looks_notice_only(summary: str) -> bool:
     return not any(keyword in text for keyword in core_keywords)
 
 
+def _clean_optional_notice(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.lower() in {"none", "null", "nan"}:
+        return None
+    return text
+
+
 def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[str, Any]:
     route_key = (route or "full").lower()
     summary = str(answer.get("summary", "")).strip()
@@ -180,6 +259,7 @@ def normalize_final_answer_by_route(route: str, answer: dict[str, Any]) -> dict[
         "resume_improvements": list(answer.get("resume_improvements", []) or []),
         "interview_preparation": list(answer.get("interview_preparation", []) or []),
         "two_week_plan": list(answer.get("two_week_plan", []) or []),
+        "input_gap_notice": _clean_optional_notice(answer.get("input_gap_notice")),
         "references": list(answer.get("references", []) or []),
     }
     if route_key in {"interview_only", "plan_only"}:
@@ -241,6 +321,15 @@ def _normalize_reference_records(references: list[Any] | None) -> list[dict[str,
 
 
 def _make_insufficient_input_item(field_name: str, idx: int) -> str:
+    if field_name == "two_week_plan":
+        defaults = [
+            "이번 주 안에 지원 직무 핵심역량 3개를 선정하고 현재 수준(상/중/하) 진단표를 작성하세요.",
+            "이틀 내 이력서 핵심 불릿 5개를 JD 키워드 기준으로 재작성하고 각 항목에 정량 지표 1개 이상을 추가하세요.",
+            "1주차 말까지 예상 질문 10개 답변 초안을 STAR 형식으로 작성하고 약한 답변 3개를 우선 보완하세요.",
+            "2주차에 모의 면접 2회를 진행하고 피드백 3개를 반영해 최종 지원본(이력서/포트폴리오)을 확정하세요.",
+        ]
+        return defaults[min(max(idx - 1, 0), len(defaults) - 1)]
+
     prompts = {
         "resume_improvements": (
             "근거/입력 정보가 부족해 맞춤 이력서 개선 항목 생성이 제한됩니다. "
@@ -251,7 +340,7 @@ def _make_insufficient_input_item(field_name: str, idx: int) -> str:
             "지원 포지션, 예상 면접 유형, 핵심 성과 지표를 추가로 알려주세요."
         ),
         "two_week_plan": (
-            "근거/입력 정보가 부족해 2주 실행계획을 세부화하기 어렵습니다. "
+            "근거/입력 정보가 부족해 2주 실행계획 세부화가 제한됩니다. "
             "목표 회사, 일정 제약, 우선순위 역량을 추가로 제공해 주세요."
         ),
     }
@@ -274,6 +363,7 @@ def enforce_final_answer_policy(
         references = _normalize_reference_records(rag_refs[:4])
 
     citation_tag = "[1]" if references else ""
+    input_gap_notice = _clean_optional_notice(payload.get("input_gap_notice")) or ""
     for field_name, minimum in min_rules.items():
         items = payload.get(field_name, [])
         normalized_items = [str(item).strip() for item in items] if isinstance(items, list) else []
@@ -282,12 +372,18 @@ def enforce_final_answer_policy(
             payload[field_name] = []
             continue
         if len(normalized_items) < minimum:
+            if field_name == "two_week_plan" and not input_gap_notice:
+                input_gap_notice = (
+                    "입력 정보가 제한되어 기본 실행 플랜을 함께 제시했습니다. "
+                    "목표 회사, 일정 제약, 우선순위 역량을 추가로 입력하면 더 구체화할 수 있습니다."
+                )
             for idx in range(len(normalized_items) + 1, minimum + 1):
                 normalized_items.append(_make_insufficient_input_item(field_name, idx))
         if citation_tag:
             normalized_items = [_ensure_citation(item, citation_tag) for item in normalized_items]
         payload[field_name] = normalized_items
 
+    payload["input_gap_notice"] = input_gap_notice or None
     payload["references"] = references
     return payload
 
@@ -298,6 +394,8 @@ def _run_tool_loop_structured(
     output_schema: type[TStructured],
     max_steps: int = 4,
     max_tool_rounds: int = 2,
+    model_temperature: float = 0.2,
+    system_prompt: str | None = None,
 ) -> TStructured:
     structured, _ = _run_tool_loop_structured_with_trace(
         prompt=prompt,
@@ -305,6 +403,8 @@ def _run_tool_loop_structured(
         output_schema=output_schema,
         max_steps=max_steps,
         max_tool_rounds=max_tool_rounds,
+        model_temperature=model_temperature,
+        system_prompt=system_prompt,
     )
     return structured
 
@@ -315,9 +415,13 @@ def _run_tool_loop_structured_with_trace(
     output_schema: type[TStructured],
     max_steps: int = 4,
     max_tool_rounds: int = 2,
+    model_temperature: float = 0.2,
+    system_prompt: str | None = None,
 ) -> tuple[TStructured, list[str]]:
-    llm = get_chat_model(temperature=0.2).bind_tools(tools)
+    llm = get_chat_model(temperature=model_temperature).bind_tools(tools)
     messages = [HumanMessage(content=prompt)]
+    if system_prompt:
+        messages = [SystemMessage(content=system_prompt), *messages]
     tool_outputs: list[str] = []
     seen_calls: set[str] = set()
     tool_round_count = 0
@@ -388,7 +492,7 @@ def _run_tool_loop_structured_with_trace(
             )
             break
 
-    parser = get_chat_model(temperature=0.2).with_structured_output(output_schema)
+    parser = get_chat_model(temperature=model_temperature).with_structured_output(output_schema)
     structured = parser.invoke(
         [
             *messages,
@@ -419,7 +523,18 @@ def _needs_citation_rewrite(payload: dict[str, Any], references: list[dict[str, 
 
 
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
-    llm = get_chat_model(temperature=0.1)
+    supervisor_llm = get_chat_model(temperature=0.0)
+    rag_planner_llm = get_chat_model(temperature=0.1)
+    plan_llm = get_chat_model(temperature=0.15)
+    synthesis_llm = get_chat_model(temperature=0.1)
+    resume_system_prompt = (
+        "You are Resume Agent. Focus on resume/JD gap analysis, use tools when helpful, "
+        "and output only schema-compliant Korean results."
+    )
+    interview_system_prompt = (
+        "You are Interview Agent. Focus on interview coaching grounded in evidence, "
+        "use tools when helpful, and output only schema-compliant Korean results."
+    )
     resume_few_shot = """
 [Few-shot 예시 1]
 입력:
@@ -688,16 +803,26 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                 "2주차: 면접 질문별 답변 스크립트 완성",
                 "2주차: 모의 면접 및 피드백 반영",
             ],
+            "input_gap_notice": "일부 입력/근거 정보가 부족해 기본 실행 플랜을 제공합니다.",
             "references": references,
         }
 
     def _route_by_supervisor(state: AgentState) -> AgentState:
-        router = llm.with_structured_output(RouteDecision)
+        router = supervisor_llm.with_structured_output(RouteDecision)
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
         ) or "없음"
         resume_text = (state.get("resume_text") or "").strip()
         jd_text = (state.get("jd_text") or "").strip()
+        heuristic = heuristic_route_from_query(state.get("user_query", ""))
+        if heuristic:
+            route, reason = heuristic
+            if not resume_text and route == "resume_only":
+                route = "plan_only"
+                reason = (
+                    f"{reason} / 이력서 텍스트가 없어 resume_only 대신 plan_only로 조정"
+                )
+            return {"route": route, "routing_reason": reason}
         try:
             decision = router.invoke(
                 f"""
@@ -731,6 +856,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 {history_text}
 
 [라우팅 규칙]
+- 사용자가 제외 요청을 명시(예: "면접 제외", "계획 제외", "이력서 제외")하면 해당 제외 의도를 강하게 반영하라.
 - 이력서 텍스트가 미제공이면 resume_only는 가능한 한 피하라.
 - 이력서 텍스트가 미제공이고 요청이 이력서 중심이면 plan_only 또는 full 중 더 안전한 쪽을 선택하라.
 - 면접 대비 요청이 명확하면 interview_only를 우선 검토하라.
@@ -806,16 +932,20 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         query: str,
         jd_text: str,
         resume_text: str,
+        jd_base_score: float,
+        resume_base_score: float,
+        overlap_weight: float,
         top_k: int = 2,
     ) -> list[SearchHit]:
         ephemeral_hits: list[SearchHit] = []
+        safe_overlap_weight = max(0.0, min(overlap_weight, 1.0))
 
         def _append_hits(raw_text: str, source: str, source_type: str, base_score: float, start_chunk_id: int) -> None:
             for idx, chunk in enumerate(_chunk_inline_text(raw_text)[:4], start=1):
                 overlap_score = _lexical_overlap_score(query, chunk)
                 if overlap_score <= 0.0:
                     continue
-                score = round(base_score + (overlap_score * 0.35), 4)
+                score = round(base_score + (overlap_score * safe_overlap_weight), 4)
                 ephemeral_hits.append(
                     SearchHit(
                         content=chunk,
@@ -830,19 +960,25 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                     )
                 )
 
-        _append_hits(jd_text, "uploaded_jd_text", "jd_upload", base_score=0.42, start_chunk_id=-1000)
+        _append_hits(
+            jd_text,
+            "uploaded_jd_text",
+            "jd_upload",
+            base_score=jd_base_score,
+            start_chunk_id=-1000,
+        )
         _append_hits(
             resume_text,
             "uploaded_resume_text",
             "resume_upload",
-            base_score=0.36,
+            base_score=resume_base_score,
             start_chunk_id=-2000,
         )
         ephemeral_hits.sort(key=lambda item: item.score, reverse=True)
         return ephemeral_hits[:top_k]
 
     def rag_node(state: AgentState) -> AgentState:
-        planner = llm.with_structured_output(RagPlan)
+        planner = rag_planner_llm.with_structured_output(RagPlan)
         settings = load_settings()
         role_hint = _infer_role_hint(state["target_role"])
         route = state.get("route", "full")
@@ -906,6 +1042,9 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             query=state["user_query"],
             jd_text=jd_text,
             resume_text=resume_text,
+            jd_base_score=settings.ephemeral_jd_base_score,
+            resume_base_score=settings.ephemeral_resume_base_score,
+            overlap_weight=settings.ephemeral_overlap_weight,
             top_k=2,
         ):
             key = f"{hit.source}::{hit.content[:120]}"
@@ -924,6 +1063,30 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         )
         top_score = ranked_hits[0].score if ranked_hits else 0.0
         low_confidence = (not ranked_hits) or (top_score < settings.rag_evidence_score_threshold)
+        if low_confidence:
+            # Agent-local recovery policy: in low-confidence mode, broaden query/filter once.
+            recovery_query = f"{state['target_role']} 핵심역량 {state['user_query']}"
+            recovery_hits = retriever.search(
+                recovery_query,
+                top_k=retrieval_top_k + 1,
+                category_filter=None,
+            )
+            for hit in recovery_hits:
+                key = f"{hit.source}::{hit.content[:120]}"
+                current = merged_hits.get(key)
+                if not current or hit.score > current.score:
+                    merged_hits[key] = hit
+            ranked_hits = rerank_hits(
+                hits=list(merged_hits.values()),
+                query=state["user_query"],
+                role_hint=source_hint,
+                route_categories=category_filter,
+                top_k=retrieval_top_k,
+                provider=settings.rerank_provider,
+                enabled=settings.rerank_enabled,
+            )
+            top_score = ranked_hits[0].score if ranked_hits else 0.0
+            low_confidence = (not ranked_hits) or (top_score < settings.rag_evidence_score_threshold)
         context_parts: list[str] = []
         refs: list[dict[str, Any]] = []
         for i, hit in enumerate(ranked_hits, start=1):
@@ -961,7 +1124,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         }
 
     def plan_node(state: AgentState) -> AgentState:
-        parser = llm.with_structured_output(PlanNotes)
+        parser = plan_llm.with_structured_output(PlanNotes)
         resume_notes = _format_resume_notes(state.get("resume_notes", {}))
         interview_notes = _format_interview_notes(state.get("interview_notes", {}))
         try:
@@ -1036,7 +1199,7 @@ RAG 근거:
 """
         try:
             if not has_resume_text:
-                parser = llm.with_structured_output(ResumeNotes)
+                parser = get_chat_model(temperature=0.1).with_structured_output(ResumeNotes)
                 structured = parser.invoke(
                     f"""
 이력서 원문이 없는 상황입니다.
@@ -1064,6 +1227,8 @@ RAG 근거:
                     prompt=prompt,
                     tools=[resume_keyword_match_score, jd_resume_gap_score],
                     output_schema=ResumeNotes,
+                    model_temperature=0.15,
+                    system_prompt=resume_system_prompt,
                 )
                 if tool_outputs and (not _resume_tool_reflected(structured, tool_outputs)):
                     retry_prompt = (
@@ -1077,6 +1242,8 @@ RAG 근거:
                         prompt=retry_prompt,
                         tools=[resume_keyword_match_score, jd_resume_gap_score],
                         output_schema=ResumeNotes,
+                        model_temperature=0.15,
+                        system_prompt=resume_system_prompt,
                     )
             return {"resume_notes": structured.model_dump()}
         except Exception as exc:
@@ -1113,7 +1280,7 @@ RAG 근거:
 """
         try:
             if not has_resume_text:
-                parser = llm.with_structured_output(InterviewNotes)
+                parser = get_chat_model(temperature=0.2).with_structured_output(InterviewNotes)
                 structured = parser.invoke(
                     f"""
 이력서 원문이 없는 상황입니다.
@@ -1141,6 +1308,8 @@ RAG 근거:
                     prompt=prompt,
                     tools=[interview_question_bank],
                     output_schema=InterviewNotes,
+                    model_temperature=0.25,
+                    system_prompt=interview_system_prompt,
                 )
                 if tool_outputs and (not _interview_tool_reflected(structured, tool_outputs)):
                     retry_prompt = (
@@ -1154,6 +1323,8 @@ RAG 근거:
                         prompt=retry_prompt,
                         tools=[interview_question_bank],
                         output_schema=InterviewNotes,
+                        model_temperature=0.25,
+                        system_prompt=interview_system_prompt,
                     )
             return {"interview_notes": structured.model_dump()}
         except Exception as exc:
@@ -1164,7 +1335,7 @@ RAG 근거:
             }
 
     def synthesis_node(state: AgentState) -> AgentState:
-        parser_llm = llm.with_structured_output(FinalAnswer)
+        parser_llm = synthesis_llm.with_structured_output(FinalAnswer)
         route = state.get("route", "full")
         history_text = "\n".join(
             f"{m['role']}: {m['content']}" for m in state.get("memory_messages", [])
@@ -1230,12 +1401,13 @@ RAG 근거:
 - summary는 4문장 이내.
 - plan_only에서도 summary는 1~2문장으로 반드시 작성.
 - route가 full 또는 plan_only인 경우 Plan Agent 결과를 우선 반영해 two_week_plan 작성.
-- references는 출처 파일명 중심으로 구성.
+- references는 임의 생성하지 말고 비워두거나 제공된 구조를 유지하세요(후처리에서 rag_refs 기준으로 정규화).
 - 책임 한계 고지 템플릿을 summary에 포함:
   "법/세무/노무 등 비전문 영역은 별도 확인이 필요하며 최신 공고/회사 정책은 반드시 원문 확인이 필요합니다."
 
 [권장 규칙]
 - 액션 불릿 끝에 citation 표기 권장(예: [1][2]).
+- input_gap_notice는 필요한 경우에만 짧게 작성하고, two_week_plan에는 실행형 액션만 포함하세요.
 - route별 최소 개수/빈 배열 정책은 후처리에서 강제되므로 우선 의미 일관성에 집중.
 """
             )
@@ -1324,6 +1496,8 @@ RAG 근거:
         {"synthesis": "synthesis"},
     )
     graph.add_edge("synthesis", END)
+    # Runtime checkpointer only (in-process): survives node-to-node retries within the same process.
+    # Cross-restart persistence is handled separately by session memory + graph_state_cache file.
     checkpointer = MemorySaver()
     return graph.compile(checkpointer=checkpointer)
 
@@ -1343,6 +1517,7 @@ class JobPilotService:
         )
         self.graph_state_cache_path = settings.index_dir / "graph_state_cache.json"
         self.graph_state_cache_lock = FileLock(str(settings.index_dir / "graph_state_cache.json.lock"))
+        # Persistent cache for cross-restart reuse of final graph output per request signature.
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)
 
@@ -1413,6 +1588,7 @@ class JobPilotService:
             "resume_improvements": result.get("final_answer", {}).get("resume_improvements", []),
             "interview_preparation": result.get("final_answer", {}).get("interview_preparation", []),
             "two_week_plan": result.get("final_answer", {}).get("two_week_plan", []),
+            "input_gap_notice": result.get("final_answer", {}).get("input_gap_notice"),
             "references": _normalize_reference_records(
                 result.get("final_answer", {}).get("references", [])
             ),

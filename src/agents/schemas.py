@@ -37,6 +37,16 @@ class PlanNotes(BaseModel):
     )
 
 
+class ReferenceItem(BaseModel):
+    rank: int = Field(description="검색 결과 순위")
+    source: str = Field(description="출처 파일명")
+    chunk_id: int | str | None = Field(default=None, description="원본 문서 내 청크 ID")
+    location: str = Field(default="n/a", description="원본 문서 위치")
+    score: float = Field(default=0.0, description="검색 점수 (0~1)")
+    category: str | None = Field(default=None, description="문서 카테고리")
+    snippet: str = Field(default="", description="청크 내용 요약")
+
+
 class FinalAnswer(BaseModel):
     summary: str = Field(description="요청에 대한 핵심 요약")
     resume_improvements: list[str] = Field(
@@ -51,4 +61,11 @@ class FinalAnswer(BaseModel):
         default_factory=list,
         description="2주 실행 계획(라우트에 따라 비워질 수 있음)",
     )
-    references: list[str] = Field(default_factory=list, description="참고한 문서/근거 출처")
+    input_gap_notice: str | None = Field(
+        default=None,
+        description="입력 정보 부족 시 사용자에게 추가 제공을 요청하는 안내 문구",
+    )
+    references: list[ReferenceItem] = Field(
+        default_factory=list,
+        description="참고한 문서/근거 출처 구조화 목록",
+    )

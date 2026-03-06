@@ -13,6 +13,23 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx"}
 
 
+def _infer_root_category_from_filename(path: Path) -> str:
+    """Infer category for root-level files to avoid uncategorized overuse."""
+    stem = path.stem.lower()
+    filename = path.name.lower()
+    text = f"{stem} {filename}"
+
+    if any(token in text for token in ("job_posting", "posting", "공고", "채용", "job_market")):
+        return "job_postings"
+    if any(token in text for token in ("jd", "job_description", "직무기술", "job_desc")):
+        return "jd"
+    if any(token in text for token in ("interview", "면접")):
+        return "interview_guides"
+    if any(token in text for token in ("portfolio", "포트폴리오", "resume", "이력서")):
+        return "portfolio_examples"
+    return "uncategorized"
+
+
 def _read_text_file(path: Path) -> list[dict[str, object]]:
     text = path.read_text(encoding="utf-8")
     blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
@@ -106,8 +123,9 @@ def iter_source_files(knowledge_dir: Path) -> Iterable[Path]:
             yield path
 
 
-def load_documents(knowledge_dir: Path) -> list[Document]:
+def load_documents_with_report(knowledge_dir: Path) -> tuple[list[Document], list[dict[str, str]]]:
     docs: list[Document] = []
+    failures: list[dict[str, str]] = []
     for path in iter_source_files(knowledge_dir):
         try:
             suffix = path.suffix.lower()
@@ -124,13 +142,19 @@ def load_documents(knowledge_dir: Path) -> list[Document]:
         except Exception as exc:
             # Keep service available even if one file is malformed or parser dependency is missing.
             print(f"[WARN] Failed to load {path.name}: {exc}")
+            relative = path.relative_to(knowledge_dir).as_posix()
+            failures.append({"file": relative, "error": str(exc)})
             continue
 
         if not sections:
             continue
 
         relative = path.relative_to(knowledge_dir)
-        category = relative.parts[0] if len(relative.parts) > 1 else "uncategorized"
+        category = (
+            relative.parts[0]
+            if len(relative.parts) > 1
+            else _infer_root_category_from_filename(path)
+        )
         for section in sections:
             content = str(section.get("content", "")).strip()
             if not content:
@@ -151,6 +175,11 @@ def load_documents(knowledge_dir: Path) -> list[Document]:
                     metadata=metadata,
                 )
             )
+    return docs, failures
+
+
+def load_documents(knowledge_dir: Path) -> list[Document]:
+    docs, _ = load_documents_with_report(knowledge_dir)
     return docs
 
 
