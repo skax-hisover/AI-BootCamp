@@ -105,6 +105,7 @@ python scripts/run_streamlit.py
   ```powershell
   python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
   ```
+  - 현재 샘플 구성은 총 17건(`resume_only` 4, `interview_only` 4, `plan_only` 3, `full` 2, 모호 질의 4)으로 라우트 균형 + 경계조건을 함께 검증
   - 샘플 질의셋의 `expected_route`가 있을 경우 Top-1 라우팅 정확도를 계산
   - `references >= 1` 비율, `two_week_plan >= 4` 비율을 함께 계산
   - 임계치 미달 시 non-zero 종료코드로 CI/배치 점검 가능

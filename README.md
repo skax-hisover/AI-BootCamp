@@ -228,5 +228,6 @@ python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_quer
 ```
 
 - 지표: 라우팅 정확도(`expected_route`가 있을 때), 근거 포함률, 플랜 품질률
+- 샘플 구성: 총 17건(`resume_only` 4, `interview_only` 4, `plan_only` 3, `full` 2, 모호 질의 4)으로 라우트 균형 + 경계조건을 함께 검증
 - 기준 조정: `--min-routing-accuracy`, `--min-reference-rate`, `--min-plan-quality-rate`
 - 증빙 파일은 `--output` 옵션을 사용하면 UTF-8로 저장되어 인코딩 깨짐을 방지할 수 있습니다.

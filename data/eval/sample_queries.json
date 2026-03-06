@@ -61,6 +61,62 @@
     "resume_text": "",
     "jd_text": "PM 채용: 우선순위, KPI 설계, 조직 커뮤니케이션",
     "expected_route": "plan_only"
+  },
+  {
+    "query": "이력서만 빠르게 고쳐줘. 면접이랑 계획은 제외해.",
+    "target_role": "데이터 분석가",
+    "resume_text": "SQL 리포트 작성, 파이썬 분석 자동화 경험",
+    "jd_text": "데이터 분석가 채용: SQL, Python, 지표 설계, 실험 분석",
+    "expected_route": "resume_only"
+  },
+  {
+    "query": "면접 준비만 하고 싶어. 이력서/2주 계획은 빼줘.",
+    "target_role": "PM",
+    "resume_text": "",
+    "jd_text": "PM 채용: 우선순위, KPI, 협업 커뮤니케이션, 리스크 관리",
+    "expected_route": "interview_only"
+  },
+  {
+    "query": "2주 실행 계획만 우선 받고 싶어. 전체 요약은 짧게.",
+    "target_role": "데이터 분석가",
+    "resume_text": "",
+    "jd_text": "데이터 분석가 채용: SQL, 대시보드, 실험 설계, 비즈니스 커뮤니케이션",
+    "expected_route": "plan_only"
+  },
+  {
+    "query": "이력서랑 면접 모두 준비해줘. 계획은 포함해도 되고 안 해도 돼.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "FastAPI 운영, 장애 대응, Docker 배포 경험",
+    "jd_text": "백엔드 채용: Python, API 성능 개선, DB 튜닝, 모니터링",
+    "expected_route": ""
+  },
+  {
+    "query": "무엇부터 해야 할지 모르겠어. 지금 상태에서 가장 급한 것만 정리해줘.",
+    "target_role": "PM",
+    "resume_text": "신규 기능 기획, 데이터 확인, 협업 경험",
+    "jd_text": "PM 채용: 우선순위 결정, KPI 관리, 이해관계자 조율",
+    "expected_route": ""
+  },
+  {
+    "query": "내 이력서와 JD 기준으로 부족 역량과 면접 대비를 같이 보고 싶어.",
+    "target_role": "데이터 분석가",
+    "resume_text": "Python 분석, 기본 SQL, 대시보드 구축 경험",
+    "jd_text": "데이터 분석가 채용: 고급 SQL, 실험 설계, 통계, 커뮤니케이션",
+    "expected_route": "full"
+  },
+  {
+    "query": "면접 제외하고 실무 액션 위주로만 정리해줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "Python API 개발, AWS 배포, 기본 모니터링 경험",
+    "jd_text": "백엔드 채용: Python, DB 성능 최적화, 장애 대응, 협업",
+    "expected_route": "resume_only"
+  },
+  {
+    "query": "이력서와 계획은 제외하고 면접 질문/답변만 핵심 5개 줘.",
+    "target_role": "데이터 분석가",
+    "resume_text": "",
+    "jd_text": "데이터 분석가 채용: SQL, Python, 실험, 지표 해석",
+    "expected_route": "interview_only"
   }
 ]
 

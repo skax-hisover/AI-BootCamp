@@ -171,6 +171,17 @@
   - 부분 실패 계약: `ChatResponse.node_status`(ok/degraded/skipped, error_code/detail)로 노드별 상태를 명시해 단일 노드 실패가 전체 500으로 전파되지 않도록 설계
   - Tool Calling 능동성 명시: `_run_tool_loop_structured_with_trace()`에서 `bind_tools()`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 실행
 
+### **2.6 설계-구현 1:1 매핑**
+
+| 설계 정책(문서) | 구현 위치(코드) | 구현 방식 요약 |
+|---|---|---|
+| Route-aware 출력 정책 | `src/workflow/engine.py` (`route_minimums`, `normalize_final_answer_by_route`, `enforce_final_answer_policy`) | 라우트별 최소 항목/섹션 표시 규칙을 코드 후처리로 강제 |
+| 부분 실패 격리 계약 | `src/workflow/engine.py` (`derive_node_status`), `src/workflow/contracts.py` (`ChatResponse.node_status`) | 노드 단위 fallback/degraded를 응답 메타로 노출하고 전체 요청은 유지 |
+| Tool Calling 능동 실행 | `src/workflow/engine.py` (`_run_tool_loop_structured_with_trace`), `src/agents/tools.py` | `bind_tools()`로 도구를 모델에 주입하고 `tool_calls`를 모델이 자율 선택 |
+| 체크포인터/메모리 역할 분리 | `src/workflow/engine.py` (`MemorySaver`, `graph_state_cache`), `src/utils/memory.py` (`SessionMemory`) | 런타임 그래프 복원 vs 재시작 후 영속 대화/결과 캐시를 분리 운영 |
+| RAG 안전/근거 추적 | `src/workflow/engine.py` (`rag_node`), `src/retrieval/hybrid.py`, `src/retrieval/rerank.py` | 하이브리드 검색 + 재정렬 + 저신뢰 안전모드 + 구조화 references/score_breakdown 제공 |
+| 차별성 자동평가 루프 | `scripts/evaluate_differentiation_metrics.py`, `data/eval/sample_queries.json` | 라우팅/근거 포함/플랜 품질 지표를 배치 실행으로 자동 검증 |
+
 **3. 주요 기능 및 동작 시나리오**
 
 ### **3.1 사용자 시나리오(Use Case Scenario)**
