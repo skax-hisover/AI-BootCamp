@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 import re
+import time
 from pathlib import Path
 from typing import Any, Literal, TypeVar
 
@@ -28,6 +29,14 @@ from src.workflow.contracts import (
     ChatRequest,
     ChatResponse,
     enforce_chat_response_contract,
+)
+from src.workflow.prompts import (
+    PROMPT_RULE_ALL_FIELDS_KOREAN,
+    PROMPT_RULE_RESULT_ONLY,
+    STRUCTURED_JSON_REPAIR_INSTRUCTION,
+    TOOL_LOOP_FINALIZATION_INSTRUCTION,
+    build_common_policy_block,
+    build_specialist_system_prompt,
 )
 
 
@@ -382,6 +391,126 @@ def _collect_text_values(payload: dict[str, Any]) -> list[str]:
     return texts
 
 
+def _sanitize_evidence_map(raw_map: Any, max_ref: int) -> dict[str, list[int]]:
+    """Keep only evidence indices that point to existing references."""
+    if not isinstance(raw_map, dict) or max_ref <= 0:
+        return {}
+    sanitized: dict[str, list[int]] = {}
+    for key, value in raw_map.items():
+        key_text = str(key).strip()
+        if not key_text or not isinstance(value, list):
+            continue
+        normalized_indices: list[int] = []
+        for item in value:
+            try:
+                idx = int(item)
+            except (TypeError, ValueError):
+                continue
+            if idx < 1 or idx > max_ref or idx in normalized_indices:
+                continue
+            normalized_indices.append(idx)
+        if normalized_indices:
+            sanitized[key_text] = normalized_indices
+    return sanitized
+
+
+def _sanitize_notes_evidence_map(notes: dict[str, Any], max_ref: int) -> dict[str, Any]:
+    if not isinstance(notes, dict):
+        return {}
+    normalized = dict(notes)
+    normalized["evidence_map"] = _sanitize_evidence_map(normalized.get("evidence_map"), max_ref=max_ref)
+    return normalized
+
+
+def _merge_reference_records(
+    primary: list[dict[str, Any]] | None,
+    secondary: list[dict[str, Any]] | None,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in _normalize_reference_records(primary) + _normalize_reference_records(secondary):
+        key = "::".join(
+            [
+                str(item.get("source", "")),
+                str(item.get("chunk_id", "")),
+                str(item.get("location", "")),
+                str(item.get("snippet", "")),
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+        if len(merged) >= max(1, limit):
+            break
+    for idx, item in enumerate(merged, start=1):
+        item["rank"] = idx
+    return merged
+
+
+def _cache_record_payload_for_request(record: Any, signature: str) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    kind = str(record.get("cache_kind", ""))
+    if kind == "final_answer_payload_v1":
+        if record.get("signature") != signature:
+            return None
+        payload = record.get("payload")
+        return payload if isinstance(payload, dict) else None
+    if kind == "final_answer_payload_v2":
+        items = record.get("items", [])
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            if item.get("signature") != signature:
+                continue
+            payload = item.get("payload")
+            if isinstance(payload, dict):
+                return payload
+    return None
+
+
+def _upsert_cache_record(
+    record: Any,
+    signature: str,
+    payload: dict[str, Any],
+    max_items: int,
+) -> dict[str, Any]:
+    max_entries = max(1, int(max_items))
+    items: list[dict[str, Any]] = []
+    if isinstance(record, dict):
+        kind = str(record.get("cache_kind", ""))
+        if kind == "final_answer_payload_v2" and isinstance(record.get("items"), list):
+            items = [item for item in record["items"] if isinstance(item, dict)]
+        elif kind == "final_answer_payload_v1":
+            old_signature = record.get("signature")
+            old_payload = record.get("payload")
+            if isinstance(old_signature, str) and isinstance(old_payload, dict):
+                items = [
+                    {
+                        "signature": old_signature,
+                        "payload": old_payload,
+                        "updated_at": float(record.get("updated_at", 0.0) or 0.0),
+                    }
+                ]
+    items = [item for item in items if item.get("signature") != signature]
+    items.insert(
+        0,
+        {
+            "signature": signature,
+            "payload": payload,
+            "updated_at": time.time(),
+        },
+    )
+    return {
+        "cache_kind": "final_answer_payload_v2",
+        "items": items[:max_entries],
+    }
+
+
 def derive_node_status(route: str, state: AgentState) -> dict[str, dict[str, Any]]:
     """Build partial-failure status for each node without failing whole response."""
     route_key = (route or "full").lower()
@@ -618,11 +747,7 @@ def _run_tool_loop_structured_with_trace(
         [
             *messages,
             HumanMessage(
-                content=(
-                    "위 대화와 도구 결과를 종합하여 최종 결과를 작성하세요. "
-                    "더 이상 도구를 호출하지 말고, 생각 과정을 노출하지 말고 결과만 작성하세요. "
-                    "반드시 한국어로 작성하세요."
-                )
+                content=TOOL_LOOP_FINALIZATION_INSTRUCTION
             ),
         ],
     )
@@ -649,13 +774,11 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
     rag_planner_llm = get_chat_model(temperature=0.1)
     plan_llm = get_chat_model(temperature=0.15)
     synthesis_llm = get_chat_model(temperature=0.1)
-    resume_system_prompt = (
-        "당신은 Resume Agent입니다. 이력서/JD 갭 분석에 집중하고 필요 시 도구를 자율 호출하세요. "
-        "출력은 반드시 한국어로, 스키마를 준수한 구조화 결과만 반환하세요."
+    resume_system_prompt = build_specialist_system_prompt(
+        "Resume Agent", "이력서/JD 갭 분석에 집중하고 필요 시 도구를 자율 호출하세요."
     )
-    interview_system_prompt = (
-        "당신은 Interview Agent입니다. 근거 기반 면접 코칭에 집중하고 필요 시 도구를 자율 호출하세요. "
-        "출력은 반드시 한국어로, 스키마를 준수한 구조화 결과만 반환하세요."
+    interview_system_prompt = build_specialist_system_prompt(
+        "Interview Agent", "근거 기반 면접 코칭에 집중하고 필요 시 도구를 자율 호출하세요."
     )
     resume_few_shot_bank = {
         "backend": """
@@ -768,8 +891,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                     current_prompt = (
                         f"{prompt}\n\n"
                         "[JSON_REPAIR]\n"
-                        "직전 응답의 구조화 파싱이 실패했습니다. "
-                        "스키마 필드를 빠짐없이 채우되, 생각 과정 없이 결과만 한국어 JSON으로 다시 작성하세요."
+                        f"{STRUCTURED_JSON_REPAIR_INSTRUCTION}"
                     )
         assert last_error is not None
         raise last_error
@@ -1096,7 +1218,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         route_key = (route or "full").lower()
         fallback_category = {"uncategorized"}
         if route_key == "resume_only":
-            return {"job_postings", "jd", "portfolio_examples"} | fallback_category
+            return {"job_postings", "jd", "portfolio_examples", "resume_upload"} | fallback_category
         if route_key == "interview_only":
             return {"interview_guides", "job_postings", "jd"} | fallback_category
         if route_key == "plan_only":
@@ -1153,7 +1275,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                         source=source,
                         score=score,
                         metadata={
-                            "category": "jd" if source_type == "jd_upload" else "portfolio_examples",
+                            "category": "jd" if source_type == "jd_upload" else "resume_upload",
                             "source_type": source_type,
                             "location": f"inline_chunk={idx}",
                             "chunk_id": start_chunk_id - idx,
@@ -1177,6 +1299,106 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         )
         ephemeral_hits.sort(key=lambda item: item.score, reverse=True)
         return ephemeral_hits[:top_k]
+
+    def _location_label(metadata: dict[str, Any]) -> str:
+        if "location" in metadata:
+            return str(metadata["location"])
+        if "page_number" in metadata:
+            return f"page={metadata['page_number']}"
+        if "paragraph_number" in metadata:
+            return f"paragraph={metadata['paragraph_number']}"
+        if "sheet_name" in metadata and "row_number" in metadata:
+            return f"sheet={metadata['sheet_name']}, row={metadata['row_number']}"
+        if "row_number" in metadata:
+            return f"row={metadata['row_number']}"
+        return "n/a"
+
+    def _specialist_local_recovery(
+        state: AgentState,
+        specialist: Literal["resume", "interview"],
+    ) -> tuple[str, list[dict[str, Any]], bool]:
+        base_context = str(state.get("rag_context", "") or "")
+        base_refs = _normalize_reference_records(
+            state.get("rag_refs", []) if isinstance(state.get("rag_refs"), list) else []
+        )
+        if not state.get("rag_low_confidence"):
+            return base_context, base_refs, False
+
+        settings = load_settings()
+        retrieval_source_cap = (
+            settings.retrieval_max_chunks_per_file
+            if not settings.rerank_enabled
+            else 0
+        )
+        route = str(state.get("route", "full"))
+        route_categories = _category_filter_for_route(route)
+        role_hint = _infer_role_hint(state["target_role"])
+        specialist_hint = "이력서 갭 분석 핵심역량" if specialist == "resume" else "면접 질문 답변 전략"
+        jd_text = (state.get("jd_text") or "").strip()
+        resume_text = (state.get("resume_text") or "").strip()
+        query_candidates = [
+            f"{state['target_role']} {specialist_hint} {state['user_query']}",
+            f"{state['target_role']} {state['user_query']}",
+        ]
+        if jd_text:
+            query_candidates.append(f"JD 요구역량 {jd_text[:220]}")
+        if specialist == "interview" and resume_text:
+            query_candidates.append(f"경험 기반 면접 포인트 {resume_text[:220]}")
+
+        merged_hits: dict[str, SearchHit] = {}
+        for candidate in query_candidates[:3]:
+            for hit in retriever.search(
+                candidate,
+                top_k=3,
+                category_filter=None,
+                max_chunks_per_file=retrieval_source_cap,
+            ):
+                key = f"{hit.source}::{hit.content[:120]}"
+                current = merged_hits.get(key)
+                if not current or hit.score > current.score:
+                    merged_hits[key] = hit
+
+        ranked_hits = rerank_hits(
+            hits=list(merged_hits.values()),
+            query=f"{state['target_role']} {state['user_query']}",
+            role_hint=role_hint,
+            route_categories=route_categories,
+            top_k=3,
+            max_per_source=settings.rerank_max_per_source,
+            provider=settings.rerank_provider,
+            enabled=settings.rerank_enabled,
+        )
+        if not ranked_hits:
+            return base_context, base_refs, True
+
+        top_score = ranked_hits[0].score
+        low_confidence = top_score < settings.rag_evidence_score_threshold
+        extra_context_lines: list[str] = []
+        extra_refs: list[dict[str, Any]] = []
+        for hit in ranked_hits:
+            extra_context_lines.append(
+                f"[{specialist}-recovery] ({hit.source}, score={hit.score})\n{hit.content}"
+            )
+            extra_refs.append(
+                {
+                    "source": hit.source,
+                    "score": hit.score,
+                    "category": hit.metadata.get("category"),
+                    "chunk_id": hit.metadata.get("chunk_id"),
+                    "location": _location_label(hit.metadata),
+                    "snippet": hit.content[:120].replace("\n", " "),
+                    "score_breakdown": hit.metadata.get("score_breakdown"),
+                }
+            )
+        merged_context = base_context
+        if extra_context_lines:
+            merged_context = (
+                f"{base_context}\n\n[specialist-local-recovery] "
+                f"{specialist} 노드가 근거 보강을 위해 추가 검색을 수행했습니다.\n"
+                + "\n\n".join(extra_context_lines)
+            ).strip()
+        merged_refs = _merge_reference_records(base_refs, extra_refs, limit=8)
+        return merged_context, merged_refs, low_confidence
 
     def rag_node(state: AgentState) -> AgentState:
         planner = rag_planner_llm.with_structured_output(RagPlan)
@@ -1210,19 +1432,6 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         except Exception:
             query_candidates = [state["user_query"], f"{state['target_role']} {state['user_query']}"]
             source_hint = role_hint
-
-        def _location_label(metadata: dict[str, Any]) -> str:
-            if "location" in metadata:
-                return str(metadata["location"])
-            if "page_number" in metadata:
-                return f"page={metadata['page_number']}"
-            if "paragraph_number" in metadata:
-                return f"paragraph={metadata['paragraph_number']}"
-            if "sheet_name" in metadata and "row_number" in metadata:
-                return f"sheet={metadata['sheet_name']}, row={metadata['row_number']}"
-            if "row_number" in metadata:
-                return f"row={metadata['row_number']}"
-            return "n/a"
 
         merged_hits: dict[str, SearchHit] = {}
         for candidate in query_candidates[:query_limit]:
@@ -1346,9 +1555,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
             structured = _invoke_structured_with_repair(
                 prompt=f"""
 당신은 Plan Agent입니다.
-중요: 답변은 반드시 한국어로만 작성하세요.
-중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
-중요: 근거 번호 citation([1][2])을 계획 항목 끝에 표기하세요.
+{build_common_policy_block(include_plan_citation=True)}
 
 [사용자 요청]
 {state['user_query']}
@@ -1378,7 +1585,11 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 schema=PlanNotes,
                 base_temperature=0.15,
             )
-            return {"plan_notes": structured.model_dump()}
+            payload = _sanitize_notes_evidence_map(
+                structured.model_dump(),
+                max_ref=len(state.get("rag_refs", []) or []),
+            )
+            return {"plan_notes": payload}
         except Exception as exc:
             return {
                 "plan_notes": _fallback_plan_notes(
@@ -1389,10 +1600,13 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
     def resume_node(state: AgentState) -> AgentState:
         has_resume_text = bool((state.get("resume_text") or "").strip())
         jd_text = (state.get("jd_text") or "").strip()
+        specialist_rag_context, specialist_rag_refs, specialist_low_confidence = _specialist_local_recovery(
+            state,
+            "resume",
+        )
         prompt = f"""
 당신은 Resume Agent입니다.
-중요: 답변은 반드시 한국어로만 작성하세요.
-중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
+{build_common_policy_block()}
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 JD/공고 텍스트:
@@ -1401,7 +1615,7 @@ JD/공고 텍스트:
 {state['resume_text'] or '이력서 텍스트가 제공되지 않았습니다.'}
 
 RAG 근거:
-{state['rag_context']}
+{specialist_rag_context}
 
 지시:
 1) resume_keyword_match_score 도구를 활용해 키워드 적합도를 반영하세요.
@@ -1439,7 +1653,7 @@ RAG 근거:
 {state['user_query']}
 
 [RAG 근거]
-{state.get('rag_context', '')}
+{specialist_rag_context}
 """,
                     schema=ResumeNotes,
                     base_temperature=0.1,
@@ -1467,7 +1681,16 @@ RAG 근거:
                         model_temperature=0.15,
                         system_prompt=resume_system_prompt,
                     )
-            return {"resume_notes": structured.model_dump()}
+            payload = _sanitize_notes_evidence_map(
+                structured.model_dump(),
+                max_ref=len(specialist_rag_refs),
+            )
+            return {
+                "resume_notes": payload,
+                "rag_context": specialist_rag_context,
+                "rag_refs": specialist_rag_refs,
+                "rag_low_confidence": specialist_low_confidence,
+            }
         except Exception as exc:
             return {
                 "resume_notes": _fallback_resume_notes(
@@ -1478,17 +1701,20 @@ RAG 근거:
     def interview_node(state: AgentState) -> AgentState:
         has_resume_text = bool((state.get("resume_text") or "").strip())
         jd_text = (state.get("jd_text") or "").strip()
+        specialist_rag_context, specialist_rag_refs, specialist_low_confidence = _specialist_local_recovery(
+            state,
+            "interview",
+        )
         prompt = f"""
 당신은 Interview Agent입니다.
-중요: 답변은 반드시 한국어로만 작성하세요.
-중요: 생각 과정을 노출하지 말고 결과만 제시하세요.
+{build_common_policy_block()}
 목표 직무: {state['target_role']}
 사용자 요청: {state['user_query']}
 JD/공고 텍스트:
 {jd_text or 'JD/공고 텍스트가 제공되지 않았습니다.'}
 
 RAG 근거:
-{state['rag_context']}
+{specialist_rag_context}
 
 지시:
 1) interview_question_bank 도구를 활용해 질문 세트를 참고하세요.
@@ -1525,7 +1751,7 @@ RAG 근거:
 {state['user_query']}
 
 [RAG 근거]
-{state.get('rag_context', '')}
+{specialist_rag_context}
 """,
                     schema=InterviewNotes,
                     base_temperature=0.2,
@@ -1553,7 +1779,16 @@ RAG 근거:
                         model_temperature=0.25,
                         system_prompt=interview_system_prompt,
                     )
-            return {"interview_notes": structured.model_dump()}
+            payload = _sanitize_notes_evidence_map(
+                structured.model_dump(),
+                max_ref=len(specialist_rag_refs),
+            )
+            return {
+                "interview_notes": payload,
+                "rag_context": specialist_rag_context,
+                "rag_refs": specialist_rag_refs,
+                "rag_low_confidence": specialist_low_confidence,
+            }
         except Exception as exc:
             return {
                 "interview_notes": _fallback_interview_notes(
@@ -1584,8 +1819,8 @@ RAG 근거:
         synthesis_prompt = f"""
 당신은 JobPilot AI의 Supervisor입니다.
 아래 정보를 통합하여 반드시 JSON 스키마에 맞는 결과를 생성하세요.
-생각 과정을 노출하지 말고 결과만 작성하세요.
-모든 필드는 한국어로 작성하세요.
+{PROMPT_RULE_RESULT_ONLY}
+{PROMPT_RULE_ALL_FIELDS_KOREAN}
 
 [사용자 요청]
 {state['user_query']}
@@ -1741,6 +1976,14 @@ class JobPilotService:
     def __init__(self) -> None:
         settings = load_settings()
         self.settings = settings
+        if settings.state_store_backend != "file":
+            # Storage backend switch scaffold: non-file backends are reserved for future integration.
+            # Current stable implementation keeps file-based stores to preserve behavior.
+            print(
+                "[WARN] STATE_STORE_BACKEND is set to "
+                f"'{settings.state_store_backend}', but only 'file' backend is currently implemented. "
+                "Falling back to file-based persistence."
+            )
         self.memory = SessionMemory(
             storage_path=settings.index_dir / "session_memory.json",
             max_sessions=settings.memory_max_sessions,
@@ -1804,17 +2047,11 @@ class JobPilotService:
     def _get_cached_final_answer(self, req: ChatRequest) -> dict[str, Any] | None:
         if self._should_bypass_cache(req):
             return None
+        signature = self._request_signature(req)
         with self.graph_state_cache_lock:
             cache = self._load_graph_state_cache()
         record = cache.get(req.session_id, {})
-        if not isinstance(record, dict):
-            return None
-        if str(record.get("cache_kind", "")) != "final_answer_payload_v1":
-            return None
-        if record.get("signature") != self._request_signature(req):
-            return None
-        payload = record.get("payload")
-        return payload if isinstance(payload, dict) else None
+        return _cache_record_payload_for_request(record, signature)
 
     def _upsert_graph_state_cache(self, req: ChatRequest, result: AgentState) -> None:
         if not self.settings.graph_state_cache_enabled:
@@ -1838,13 +2075,15 @@ class JobPilotService:
             "cached_state_hit": False,
             }
         )
+        signature = self._request_signature(req)
         with self.graph_state_cache_lock:
             cache = self._load_graph_state_cache()
-            cache[req.session_id] = {
-                "cache_kind": "final_answer_payload_v1",
-                "signature": self._request_signature(req),
-                "payload": payload,
-            }
+            cache[req.session_id] = _upsert_cache_record(
+                record=cache.get(req.session_id, {}),
+                signature=signature,
+                payload=payload,
+                max_items=self.settings.graph_state_cache_max_per_session,
+            )
             self._save_graph_state_cache(cache)
 
     def run(self, req: ChatRequest) -> ChatResponse:

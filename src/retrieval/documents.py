@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-import pandas as pd
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from src.utils.file_extract import extract_sections_from_path
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx"}
@@ -61,93 +61,6 @@ def _infer_root_category_from_filename(path: Path) -> str:
     return "uncategorized"
 
 
-def _read_text_file(path: Path) -> list[dict[str, object]]:
-    text = path.read_text(encoding="utf-8")
-    blocks = [block.strip() for block in text.split("\n\n") if block.strip()]
-    if not blocks:
-        return []
-    return [
-        {"content": block, "metadata": {"section_type": "paragraph", "section_index": idx + 1}}
-        for idx, block in enumerate(blocks)
-    ]
-
-
-def _read_csv_file(path: Path) -> list[dict[str, object]]:
-    df = pd.read_csv(path).fillna("")
-    rows = []
-    for idx, row in enumerate(df.values.tolist(), start=1):
-        row_text = " | ".join(map(str, row)).strip()
-        if row_text:
-            rows.append(
-                {
-                    "content": row_text,
-                    "metadata": {"section_type": "csv_row", "row_number": idx},
-                }
-            )
-    return rows
-
-
-def _read_pdf_file(path: Path) -> list[dict[str, object]]:
-    try:
-        from pypdf import PdfReader
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Missing dependency for PDF loader: install pypdf") from exc
-
-    reader = PdfReader(str(path))
-    pages: list[dict[str, object]] = []
-    for page_idx, page in enumerate(reader.pages, start=1):
-        page_text = (page.extract_text() or "").strip()
-        if page_text:
-            pages.append(
-                {
-                    "content": page_text,
-                    "metadata": {"section_type": "pdf_page", "page_number": page_idx},
-                }
-            )
-    return pages
-
-
-def _read_docx_file(path: Path) -> list[dict[str, object]]:
-    try:
-        from docx import Document as DocxDocument
-    except ModuleNotFoundError as exc:
-        raise RuntimeError("Missing dependency for DOCX loader: install python-docx") from exc
-
-    doc = DocxDocument(str(path))
-    paragraphs: list[dict[str, object]] = []
-    for para_idx, paragraph in enumerate(doc.paragraphs, start=1):
-        text = paragraph.text.strip()
-        if text:
-            paragraphs.append(
-                {
-                    "content": text,
-                    "metadata": {"section_type": "docx_paragraph", "paragraph_number": para_idx},
-                }
-            )
-    return paragraphs
-
-
-def _read_xlsx_file(path: Path) -> list[dict[str, object]]:
-    xls = pd.ExcelFile(path)
-    blocks: list[dict[str, object]] = []
-    for sheet in xls.sheet_names:
-        df = pd.read_excel(path, sheet_name=sheet).fillna("")
-        for row_idx, row in enumerate(df.values.tolist(), start=1):
-            row_text = " | ".join(map(str, row)).strip()
-            if row_text:
-                blocks.append(
-                    {
-                        "content": row_text,
-                        "metadata": {
-                            "section_type": "xlsx_row",
-                            "sheet_name": sheet,
-                            "row_number": row_idx,
-                        },
-                    }
-                )
-    return blocks
-
-
 def iter_source_files(knowledge_dir: Path) -> Iterable[Path]:
     for path in sorted(knowledge_dir.rglob("*")):
         if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
@@ -159,17 +72,7 @@ def load_documents_with_report(knowledge_dir: Path) -> tuple[list[Document], lis
     failures: list[dict[str, str]] = []
     for path in iter_source_files(knowledge_dir):
         try:
-            suffix = path.suffix.lower()
-            if suffix == ".csv":
-                sections = _read_csv_file(path)
-            elif suffix == ".pdf":
-                sections = _read_pdf_file(path)
-            elif suffix == ".docx":
-                sections = _read_docx_file(path)
-            elif suffix == ".xlsx":
-                sections = _read_xlsx_file(path)
-            else:
-                sections = _read_text_file(path)
+            sections = extract_sections_from_path(path)
         except Exception as exc:
             # Keep service available even if one file is malformed or parser dependency is missing.
             print(f"[WARN] Failed to load {path.name}: {exc}")

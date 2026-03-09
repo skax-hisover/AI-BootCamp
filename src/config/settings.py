@@ -68,6 +68,9 @@ class Settings:
     faiss_allow_dangerous_deserialization: bool = True
     graph_state_cache_enabled: bool = True
     graph_state_cache_bypass_contextual: bool = True
+    graph_state_cache_max_per_session: int = 5
+    state_store_backend: str = "file"  # file | sqlite | redis (scaffold)
+    state_store_dsn: str = ""
     session_memory_persist_enabled: bool = True
     session_memory_pii_mask_enabled: bool = False
     ui_history_persist_enabled: bool = True
@@ -113,6 +116,9 @@ def load_settings() -> Settings:
     faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", True)
     graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
     graph_state_cache_bypass_contextual = _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True)
+    graph_state_cache_max_per_session = _int_env("GRAPH_STATE_CACHE_MAX_PER_SESSION", 5)
+    state_store_backend = (os.getenv("STATE_STORE_BACKEND") or "file").strip().lower() or "file"
+    state_store_dsn = (os.getenv("STATE_STORE_DSN") or "").strip()
     session_memory_persist_enabled = _bool_env(
         "SESSION_MEMORY_PERSIST_ENABLED",
         _bool_env("MEMORY_PERSIST_ENABLED", True),
@@ -176,6 +182,13 @@ def load_settings() -> Settings:
         faiss_allow_dangerous_deserialization=faiss_allow_dangerous_deserialization,
         graph_state_cache_enabled=graph_state_cache_enabled,
         graph_state_cache_bypass_contextual=graph_state_cache_bypass_contextual,
+        graph_state_cache_max_per_session=max(1, min(graph_state_cache_max_per_session, 20)),
+        state_store_backend=(
+            state_store_backend
+            if state_store_backend in {"file", "sqlite", "redis"}
+            else "file"
+        ),
+        state_store_dsn=state_store_dsn,
         session_memory_persist_enabled=session_memory_persist_enabled,
         session_memory_pii_mask_enabled=session_memory_pii_mask_enabled,
         ui_history_persist_enabled=ui_history_persist_enabled,

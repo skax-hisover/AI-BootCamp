@@ -75,6 +75,9 @@ pip install -r requirements-final.txt
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 true / false면 캐시 로드 대신 재생성 경로 사용)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회)
+- `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 5 / 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
+- `STATE_STORE_BACKEND` (선택, 기본 file / `file|sqlite|redis` 스위치, 현재는 file 구현 우선 + 비file 값은 fallback)
+- `STATE_STORE_DSN` (선택, 기본 빈값 / SQLite·Redis 확장용 DSN 예약 필드)
 
 ### CLI 실행
 
@@ -160,6 +163,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 체크포인터 역할 분리 명시: `MemorySaver`는 프로세스 내 런타임 복원용, 서버 재시작 이후 복원/재사용은 `session_memory.json` + `graph_state_cache.json`이 담당
 - RAG Agent 강화: 쿼리 리라이트, 직무 힌트 기반 문서 우선순위(스코어 부스팅), route 메타 노트 반영
 - RAG Agent 자율 보강: `rag_low_confidence`일 때 1회 재검색(쿼리 확장 + 무필터 탐색) 후 재랭크하는 로컬 복구 정책 적용
+- Resume/Interview Agent 자율 보강: `rag_low_confidence`일 때 각 노드가 로컬 쿼리로 추가 검색을 수행해 근거를 보강하고, 보강된 컨텍스트/refs를 이후 노드에 전달
 - RAG 리랭크 레이어 분리: 검색(`HybridRetriever.search`) 이후 `rerank` 확장 포인트 추가(향후 cross-encoder/LLM 리랭커 교체 용이)
 - 중간 산출물 구조화: `ResumeNotes`, `InterviewNotes` 스키마 추가 및 Resume/Interview 노드 structured output 적용
 - 근거 연결성 강화: `ResumeNotes/InterviewNotes`에 `evidence_map` 추가(항목 -> 근거 chunk 번호 매핑)
@@ -190,6 +194,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 카테고리 품질 진단 추가: `HybridRetriever.build()`에서 카테고리 분포와 `uncategorized` 비율을 점검하고, 비중 과다 시 경고를 출력하며 `retriever_meta.json`에 진단 결과 기록
 - 리랭크 확장성 분리: 휴리스틱 리랭커를 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정 기반 on/off·전략 전환 포인트 제공
 - 업로드 입력 근거 강화: `rag_node`에서 `jd_text/resume_text`를 임시 청크로 생성해 검색 후보에 혼합(ephemeral evidence)하여 공고-이력서 갭 분석의 직접 근거성을 보강
+- 업로드 이력서 카테고리 분리: `resume_text` 기반 임시 청크는 `resume_upload`로 분류해 지식 문서 카테고리(`portfolio_examples`)와 의미를 분리하고, rerank에서 별도 가중으로 반영
 - 체크포인터 실효성 보강: `MemorySaver`와 별개로 `graph_state_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
   - 용어 정리: 위 캐시는 "그래프 중간 상태"가 아니라 정규화된 최종 `ChatResponse` payload 재사용 캐시
 - 캐시 안전장치 추가: `GRAPH_STATE_CACHE_ENABLED`, `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
@@ -204,6 +209,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 동시성 범위 확장: `ui_input_history.json` 로드/저장에도 파일 락(`ui_input_history.json.lock`)을 적용해 멀티세션 경합 내구성 강화
 - JD 입력 방어 대칭화: Streamlit에 JD 자동 압축(앞/뒤 유지) 옵션 및 목표 글자 수 설정을 추가해 긴 공고 텍스트 처리 비용을 완화
 - 업로드 UX 보강: 파일 업로드 반영 방식을 `덮어쓰기/추가하기`로 선택 가능하게 하고 업로드 시그니처로 중복 반영(누적 혼선)을 방지
+- 파일 파서 공통화: Streamlit 업로드 파서와 RAG 문서 로더가 `src/utils/file_extract.py`를 공통 사용해 포맷별 파싱/예외 처리를 단일화
 - Streamlit 오류 가이드 보강: 지식문서 미존재/환경변수 누락 시 사용자 안내 메시지 및 해결 가이드 표시
 - 지식 로드 실패 가시성 보강: 인덱싱 시 문서 로드 실패 목록을 `retriever_meta.json`에 기록하고, Streamlit 사이드바 버튼으로 요약 조회 지원
 - 멀티유저 방어 로직: SessionMemory에 TTL/최대 세션 수 제한 추가(메모리 누적 방지)

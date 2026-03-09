@@ -1,4 +1,7 @@
 from src.workflow.engine import (
+    _cache_record_payload_for_request,
+    _sanitize_evidence_map,
+    _upsert_cache_record,
     enforce_final_answer_policy,
     heuristic_route_from_query,
     normalize_final_answer_by_route,
@@ -155,4 +158,37 @@ def test_enforce_chat_response_contract_normalizes_node_status() -> None:
     )
     assert isinstance(payload["node_status"], dict)
     assert payload["node_status"]["resume"]["status"] == "degraded"
+
+
+def test_sanitize_evidence_map_clips_out_of_range_indices() -> None:
+    evidence_map = {
+        "항목A": [1, 2, 7, 0, -1, 2],
+        "항목B": ["3", "x", None],
+        "": [1],
+    }
+    sanitized = _sanitize_evidence_map(evidence_map, max_ref=3)
+    assert sanitized == {"항목A": [1, 2], "항목B": [3]}
+
+
+def test_sanitize_evidence_map_returns_empty_when_no_refs() -> None:
+    evidence_map = {"항목A": [1, 2, 3]}
+    assert _sanitize_evidence_map(evidence_map, max_ref=0) == {}
+
+
+def test_cache_record_supports_signature_keyed_multi_entry() -> None:
+    record = _upsert_cache_record({}, "sig-a", {"summary": "A"}, max_items=3)
+    record = _upsert_cache_record(record, "sig-b", {"summary": "B"}, max_items=3)
+    payload_a = _cache_record_payload_for_request(record, "sig-a")
+    payload_b = _cache_record_payload_for_request(record, "sig-b")
+    assert payload_a == {"summary": "A"}
+    assert payload_b == {"summary": "B"}
+
+
+def test_cache_record_applies_lru_trim_per_session() -> None:
+    record = {}
+    for idx in range(1, 5):
+        record = _upsert_cache_record(record, f"sig-{idx}", {"summary": str(idx)}, max_items=2)
+    assert _cache_record_payload_for_request(record, "sig-4") == {"summary": "4"}
+    assert _cache_record_payload_for_request(record, "sig-3") == {"summary": "3"}
+    assert _cache_record_payload_for_request(record, "sig-2") is None
 

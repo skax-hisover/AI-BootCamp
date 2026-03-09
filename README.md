@@ -27,6 +27,7 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **에이전트 자율 정책**: 이력서 텍스트가 없을 때 Resume/Interview 에이전트의 로컬 fallback 정책 적용
 - **RAG**: 문서 로딩(`.txt/.md/.csv/.pdf/.docx/.xlsx`), 청킹, FAISS 벡터 검색 + BM25 키워드 검색
 - **RAG 품질**: 인덱스 영속화(`data/index/faiss`), 메타데이터 기반 컨텍스트(page/paragraph/sheet/row), route-aware 카테고리 필터 + no-hit 재검색 fallback, 전용 리랭크 레이어
+- **중복 제어 책임 분리**: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE`에서 단일 강제로 적용
 - **로더 메타데이터 병합**: `src/retrieval/documents.py`에서 문서별 `*.meta.json` sidecar의 최소 필드(`collected_at/source_url/curator/license`)를 병합 로딩하고, sidecar 누락/오류 시 경고를 출력해 추적성을 유지
 - **RAG 점수 안정성**: 하이브리드 결합 전 FAISS distance min-max 정규화 적용으로 가중치 튜닝 예측성 향상
 - **RAG 추적성**: references에 rank/source/chunk/location/snippet 정보를 포함해 citation-근거 연결 강화
@@ -46,6 +47,7 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **Tool Calling 능동성 명시**: `engine.py::_run_tool_loop_structured_with_trace`에서 `bind_tools(...)`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 다중 스텝 실행
 - **동시성 보호**: SessionMemory read/write 구간에 파일 락(`session_memory.json.lock`) 적용
 - **서비스 패키징**: FastAPI 백엔드 + Streamlit UI
+- **파일 파서 단일화**: 업로드 파싱과 RAG 로더가 `src/utils/file_extract.py` 공통 유틸을 사용해 포맷별 예외 처리/품질 기준을 공유
 - **UI 기록 최소화 기본값**: 실행 입력 기록은 기본 `summary` 모드로 저장(원문 전체 저장은 `full` opt-in)
 - **안정성**: API 레벨 예외 처리를 통한 사용자 친화적 오류 응답
 - **오류 계약 표준화**: API/CLI/UI 공통 `error_code/detail` 페이로드 적용
@@ -122,6 +124,9 @@ Copy-Item .env.example .env
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `true`; 배포 보안 강화를 위해 `false` 시 캐시 로드 대신 재생성 권장)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
+- `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 `5`; 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
+- `STATE_STORE_BACKEND` (선택, 기본 `file`; `file|sqlite|redis`, 현재 구현은 `file` 우선이며 다른 값은 파일 저장소로 fallback)
+- `STATE_STORE_DSN` (선택, 기본 빈값; SQLite/Redis 확장 시 사용할 연결 문자열 예약 필드)
 
 ## 빠른 시작 (배포 관점)
 

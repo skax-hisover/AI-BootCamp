@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import hashlib
-from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
 
-import pandas as pd
 import streamlit as st
 from filelock import FileLock
 
@@ -16,6 +14,7 @@ from src.common import JobPilotError
 from src.config import load_settings
 from src.ui.history_record import build_history_record
 from src.ui.input_merge import merge_uploaded_text
+from src.utils.file_extract import extract_text_from_upload
 from src.utils.pii import mask_pii_payload
 from src.workflow import ChatRequest, JobPilotService
 
@@ -106,48 +105,14 @@ def _show_error_by_code(error_code: str, detail: str) -> None:
 def _extract_uploaded_text(uploaded_file) -> str:
     name = (uploaded_file.name or "").lower()
     data = uploaded_file.getvalue()
-
-    if name.endswith(".txt") or name.endswith(".md"):
-        try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError:
-            return data.decode("cp949", errors="ignore")
-
-    if name.endswith(".pdf"):
-        try:
-            from pypdf import PdfReader
-        except ModuleNotFoundError:
-            st.warning("PDF 파싱을 위해 pypdf 설치가 필요합니다.")
-            return ""
-        reader = PdfReader(BytesIO(data))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        return "\n".join(pages).strip()
-
-    if name.endswith(".docx"):
-        try:
-            from docx import Document as DocxDocument
-        except ModuleNotFoundError:
-            st.warning("DOCX 파싱을 위해 python-docx 설치가 필요합니다.")
-            return ""
-        doc = DocxDocument(BytesIO(data))
-        lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
-        return "\n".join(lines).strip()
-
-    if name.endswith(".xlsx"):
-        try:
-            xls = pd.ExcelFile(BytesIO(data))
-        except Exception as exc:
-            st.warning(f"XLSX 파일 파싱에 실패했습니다: {exc}")
-            return ""
-        blocks: list[str] = []
-        for sheet in xls.sheet_names:
-            df = pd.read_excel(xls, sheet_name=sheet).fillna("")
-            rows = [" | ".join(map(str, row)) for row in df.values.tolist()]
-            blocks.append(f"[sheet: {sheet}]\n" + "\n".join(rows))
-        return "\n\n".join(blocks).strip()
-
-    st.warning("지원하지 않는 파일 형식입니다. txt/md/pdf/docx/xlsx 파일을 업로드해 주세요.")
-    return ""
+    try:
+        return extract_text_from_upload(name, data)
+    except RuntimeError as exc:
+        st.warning(str(exc))
+        return ""
+    except Exception as exc:
+        st.warning(f"파일 파싱에 실패했습니다: {exc}")
+        return ""
 
 
 def _compress_long_text(text: str, target_chars: int) -> tuple[str, bool]:
