@@ -26,6 +26,7 @@ def test_build_history_record_summary_mode_minimizes_payload() -> None:
         storage_mode="summary",
     )
     assert record["storage_mode"] == "summary"
+    assert record["record_version"] == 1
     assert record["resume_text"] == ""
     assert record["jd_text"] == ""
     assert record["resume_hash"]
@@ -45,6 +46,7 @@ def test_build_history_record_full_mode_keeps_raw_text() -> None:
         storage_mode="full",
     )
     assert record["storage_mode"] == "full"
+    assert record["record_version"] == 1
     assert record["resume_text"] == "resume text"
     assert record["jd_text"] == "jd text"
     assert record["response"]["summary"] == "요약"

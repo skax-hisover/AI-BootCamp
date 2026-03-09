@@ -88,7 +88,7 @@
 - **Tool Calling, ReAct, Memory 활용 여부**  
   Tool Calling(필수), ReAct 스타일 도구 루프(max step 기반 종료), 세션 메모리 + LangGraph Checkpointer 적용
   - 구현 선택 명시: LangGraph Checkpointer는 `MemorySaver`(인메모리)로 같은 프로세스 런타임 내 멀티스텝 복원에 사용
-  - 저장소 역할 분담: 서버 재시작 이후 영속 복원/재사용은 `data/index/session_memory.json`(SessionMemory), `data/index/graph_state_cache.json`(파일 캐시)로 분리 운영
+  - 저장소 역할 분담: 서버 재시작 이후 영속 복원/재사용은 `data/index/session_memory.json`(SessionMemory), `data/index/final_answer_cache.json`(파일 캐시)로 분리 운영
 
 ### **2.3 RAG 구성**
 
@@ -105,15 +105,17 @@
   - 안전모드 고도화: 검색 결과가 있더라도 최고 점수가 임계치 미만이면(`RAG_EVIDENCE_SCORE_THRESHOLD`) 근거 부족 모드로 전환해 보수적 표현을 우선
   - 내구성 보강: route-aware 카테고리 필터 적용 후 결과가 비면 필터 없이 재검색(fallback)해 근거 누락을 완화
   - 캐시 로드 안전성: FAISS 캐시 로드시 `retriever_meta.json`에 저장된 `cache_hashes`와 실제 `index.faiss/index.pkl` SHA-256을 대조해 일치할 때만 재사용(불일치 시 재생성)
-  - 배포 보안 옵션: 운영 환경에서는 `FAISS_ALLOW_DANGEROUS_DESERIALIZATION=false`로 캐시 로드 대신 재생성 경로를 선택할 수 있도록 설정 기반 제어
+  - 배포 보안 기본값: `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` 기본값은 `false`이며, 로컬 개발 환경에서만 필요 시 `true`로 opt-in
   - 카테고리 품질 진단: 인덱스 빌드 시 카테고리 분포/`uncategorized` 비중을 점검하고, 비중 과다 또는 필수 카테고리 누락 시 경고와 진단 메타를 `retriever_meta.json`에 기록
   - 루트 문서 자동 분류: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화(운영은 카테고리 하위 폴더 배치를 우선 권장)
+  - 운영 스위치: `ALLOW_UNCATEGORIZED_IN_FILTER`로 route-aware 필터에서 `uncategorized` 허용 여부를 환경별로 제어해 데이터 성숙도에 따라 점진적으로 tighten 가능
   - 리랭크 확장성 분리: 휴리스틱 리랭킹을 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정으로 전략 on/off 및 교체 포인트를 표준화
   - 검색 다양성 제약: `RERANK_MAX_PER_SOURCE`로 top-k 내 동일 source 문서 청크 수를 제한해 references 중복을 완화
   - 중복 제어 역할 분리: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE` 단일 정책으로 운영
   - 업로드 입력 근거 편입: `jd_text/resume_text`를 임시 청크(ephemeral evidence)로 생성해 검색 후보에 혼합하여 공고-이력서 갭 분석의 직접 근거성을 강화
   - 임시 근거 점수 파라미터화: 업로드 텍스트 점수는 `EPHEMERAL_JD_BASE_SCORE`, `EPHEMERAL_RESUME_BASE_SCORE`, `EPHEMERAL_OVERLAP_WEIGHT`로 분리해 임계치/융합 스케일과 함께 운영 튜닝 가능
   - 점수 해석성 강화: references에 `score_breakdown`(vector/bm25/fused/penalty/rerank 기여) 메타를 포함해 품질 튜닝 근거를 가시화
+  - 점수 스케일 일관성: rerank 이후 점수도 0~1 범위로 클리핑해 `RAG_EVIDENCE_SCORE_THRESHOLD` 절대값 해석을 안정적으로 유지
 
 - **도메인 지식 범위(출처 유형/라이선스/최신성)**  
   - 출처 유형: 채용공고 요약본, 직무기술서(JD) 정리본, 면접 가이드, 포트폴리오 작성 예시  
@@ -141,12 +143,15 @@
   - 근거 부족 시 전환: 검색 결과가 부족하거나 신뢰 점수가 낮은 경우, "일반 가이드 기반 조언"으로 전환하고 단정형 표현을 제한
   - 출처 우선 응답: 가능하면 `references`에 문서 출처를 포함하고, 근거가 없는 주장은 권장안 형태(조건부 표현)로만 제시
   - 추적성 강화: `references`는 rank/source/location/chunk 정보를 포함한 형태로 제공해 citation과 출처 간 연결을 명확화
+  - UX 결정(토글): Streamlit에서 `참고 출처 메타데이터 표시` 토글을 제공해 `collected_at/source_url/curator/license` 노출 여부를 사용자가 선택할 수 있도록 설계
   - 도메인 범위 고지: 지식 범위를 벗어나는 질문은 범용 취업 준비 가이드로 응답하며, 추가 문서 업로드를 사용자에게 안내
 
 ### **2.4 서비스 개발 및 패키징 계획**
 
 - **UI 개발 방식(Streamlit, React 등)**  
   Streamlit 기반 대화형 UI(질문/직무 입력, JD/공고 + 이력서 파일 업로드, 결과 카드, 실행 입력 기록 조회/삭제, 다시 불러오기, 입력란 내부 실시간 카운터(`max_chars`) 기반 대용량 입력 방어)
+  - 실행 전 사전 안내 정책: `resume_text` 미입력 상태에서는 이력서 전용 요청이 계획 중심 라우트(`plan_only`)로 자동 조정될 수 있음을 UI에서 미리 고지해 결과 해석 혼선을 방지
+  - 실행 기록 스키마 버전 정책: `ui_input_history.json` 레코드에 `record_version`을 저장해 포맷 변경 시 역호환/마이그레이션 기준점을 유지
   - 파일 파서 공통화: Streamlit 업로드 파서와 RAG 문서 로더가 `src/utils/file_extract.py`를 공통 사용해 포맷별 파싱/예외 처리를 단일화
   - 저장소 스위치 스캐폴딩: 설정에 `STATE_STORE_BACKEND`/`STATE_STORE_DSN`을 두어 향후 SQLite/Redis 전환 경로를 열어두고, 현재는 file 백엔드를 기본/우선 적용
   - 인덱스 UX 보강: 첫 실행 인덱싱 지연을 안내하고, 관리용 "인덱스 사전 빌드/로드" 동작을 제공해 대기 시간을 예측 가능하게 설계
@@ -182,9 +187,20 @@
 | Route-aware 출력 정책 | `src/workflow/engine.py` (`route_minimums`, `normalize_final_answer_by_route`, `enforce_final_answer_policy`) | 라우트별 최소 항목/섹션 표시 규칙을 코드 후처리로 강제 |
 | 부분 실패 격리 계약 | `src/workflow/engine.py` (`derive_node_status`), `src/workflow/contracts.py` (`ChatResponse.node_status`) | 노드 단위 fallback/degraded를 응답 메타로 노출하고 전체 요청은 유지 |
 | Tool Calling 능동 실행 | `src/workflow/engine.py` (`_run_tool_loop_structured_with_trace`), `src/agents/tools.py` | `bind_tools()`로 도구를 모델에 주입하고 `tool_calls`를 모델이 자율 선택 |
-| 체크포인터/메모리 역할 분리 | `src/workflow/engine.py` (`MemorySaver`, `graph_state_cache`), `src/utils/memory.py` (`SessionMemory`) | 런타임 그래프 복원 vs 재시작 후 영속 대화/결과 캐시를 분리 운영 (`graph_state_cache`는 중간 상태 저장소가 아니라 정규화된 최종 `ChatResponse` payload cache) |
+| 체크포인터/메모리 역할 분리 | `src/workflow/engine.py` (`MemorySaver`, `final_answer_cache`), `src/utils/memory.py` (`SessionMemory`) | 런타임 그래프 복원 vs 재시작 후 영속 대화/결과 캐시를 분리 운영 (`final_answer_cache`는 중간 상태 저장소가 아니라 정규화된 최종 `ChatResponse` payload cache) |
 | RAG 안전/근거 추적 | `src/workflow/engine.py` (`rag_node`), `src/retrieval/hybrid.py`, `src/retrieval/rerank.py` | 하이브리드 검색 + 재정렬 + 저신뢰 안전모드 + 구조화 references/score_breakdown 제공 |
 | 차별성 자동평가 루프 | `scripts/evaluate_differentiation_metrics.py`, `data/eval/sample_queries.json` | 라우팅/근거 포함/플랜 품질 지표를 배치 실행으로 자동 검증 |
+
+#### 2.6-1 기술별 실제 적용 위치(1페이지 요약)
+
+| 기술 요소 | 실제 적용 위치 | 확인 포인트 |
+|---|---|---|
+| Supervisor 라우팅 | `src/workflow/engine.py` (`supervisor_node`, `route_after_*`) | 의도 분류 후 `resume/interview/plan/synthesis` 조건 분기 |
+| 하이브리드 검색 | `src/retrieval/hybrid.py` (`HybridRetriever.search`) | FAISS + BM25 융합, 점수 정규화, 길이 패널티 |
+| 리랭크/다양성 제어 | `src/retrieval/rerank.py` (`rerank_hits`) | role/category boost + source당 max 청크 제한 |
+| RAG 오케스트레이션 | `src/workflow/engine.py` (`rag_node`) | route-aware filter, no-hit fallback, low-confidence 안전모드 |
+| 실행 기록 요약 저장 | `src/ui/history_record.py` (`build_history_record`) | `summary/full` 저장 모드, `record_version` 기반 역호환 가능한 최소 저장 정책 |
+| UI 업로드 파싱 공통화 | `src/utils/file_extract.py`, `src/ui/streamlit_app.py`, `src/retrieval/documents.py` | UI/RAG가 동일 파서를 공유해 포맷별 예외 처리 단일화 |
 
 **3. 주요 기능 및 동작 시나리오**
 
@@ -298,7 +314,7 @@ sequenceDiagram
   현재 `heuristic` 리랭커 확장 포인트를 활용해 cross-encoder/LLM reranker를 실제 플러그인하고, 질의 유형별(`resume/interview/plan`) 리랭킹 정책을 분리해 정답률을 높입니다.
 
 - **복원성/운영성 강화(스토리지 고도화)**  
-  파일 기반 상태 캐시/메모리(SessionMemory, graph_state_cache)를 SQLite/외부 스토어로 단계 전환해 동시성/내구성을 높이고, 배포 환경에서의 장애 복구 및 이력 추적을 표준화합니다.
+  파일 기반 상태 캐시/메모리(SessionMemory, final_answer_cache)를 SQLite/외부 스토어로 단계 전환해 동시성/내구성을 높이고, 배포 환경에서의 장애 복구 및 이력 추적을 표준화합니다.
 
 - **데이터 거버넌스 자동화**  
   지식 문서 메타데이터 최소 필드(`collected_at/source_url/curator/license`) 점검 스크립트를 추가해, 카테고리 누락·최신성 저하·라이선스 미기재 문서를 배치 단계에서 자동 검출하도록 확장합니다.

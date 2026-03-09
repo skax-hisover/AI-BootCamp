@@ -12,7 +12,7 @@ from filelock import FileLock
 
 from src.common import JobPilotError
 from src.config import load_settings
-from src.ui.history_record import build_history_record
+from src.ui.history_record import HISTORY_RECORD_VERSION, build_history_record
 from src.ui.input_merge import merge_uploaded_text
 from src.utils.file_extract import extract_text_from_upload
 from src.utils.pii import mask_pii_payload
@@ -64,7 +64,39 @@ def _load_persisted_history() -> list[dict]:
             raw = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return []
-    return raw if isinstance(raw, list) else []
+    if not isinstance(raw, list):
+        return []
+    normalized: list[dict] = []
+    for item in raw:
+        if isinstance(item, dict):
+            normalized.append(_normalize_history_item(item))
+    return normalized
+
+
+def _normalize_history_item(item: dict) -> dict:
+    normalized = dict(item)
+    try:
+        version = int(item.get("record_version", 0) or 0)
+    except (TypeError, ValueError):
+        version = 1
+    normalized["record_version"] = version or 1
+    normalized["storage_mode"] = (
+        str(item.get("storage_mode", "full"))
+        if str(item.get("storage_mode", "full")) in {"summary", "full"}
+        else "full"
+    )
+    normalized["query"] = str(item.get("query", "") or "")
+    normalized["target_role"] = str(item.get("target_role", "백엔드 개발자") or "백엔드 개발자")
+    normalized["session_id"] = str(item.get("session_id", "") or "")
+    try:
+        normalized["resume_len"] = int(item.get("resume_len", 0) or 0)
+    except (TypeError, ValueError):
+        normalized["resume_len"] = 0
+    try:
+        normalized["jd_len"] = int(item.get("jd_len", 0) or 0)
+    except (TypeError, ValueError):
+        normalized["jd_len"] = 0
+    return normalized
 
 
 def _save_persisted_history(history: list[dict]) -> None:
@@ -190,6 +222,8 @@ def run() -> None:
         st.session_state.last_jd_upload_sig = ""
     if "show_debug_meta" not in st.session_state:
         st.session_state.show_debug_meta = False
+    if "show_reference_metadata" not in st.session_state:
+        st.session_state.show_reference_metadata = False
     if "history_storage_mode" not in st.session_state:
         st.session_state.history_storage_mode = settings.ui_history_storage_mode
 
@@ -217,7 +251,8 @@ def run() -> None:
                     st.caption(
                         f"직무: {item['target_role']} | 세션: {item['session_id']} | "
                         f"이력서 길이: {item['resume_len']}자 | JD 길이: {item.get('jd_len', 0)}자 | "
-                        f"저장모드: {item.get('storage_mode', 'full')}"
+                        f"저장모드: {item.get('storage_mode', 'full')} | "
+                        f"스키마 v{item.get('record_version', 1)}"
                     )
                     col_a, col_b = st.columns(2)
                     if col_a.button("다시 불러오기", key=f"load_{real_idx}", use_container_width=True):
@@ -351,6 +386,11 @@ def run() -> None:
                 key="show_debug_meta",
                 help="출력 하단에 route, routing_reason, rag_low_confidence 정보를 표시합니다.",
             )
+            st.checkbox(
+                "참고 출처 메타데이터 표시",
+                key="show_reference_metadata",
+                help="references에 포함된 수집일/출처 URL/큐레이터/라이선스 정보를 표시합니다.",
+            )
             if st.session_state.persist_history_enabled != st.session_state._persist_history_prev:
                 if st.session_state.persist_history_enabled:
                     st.session_state.input_history = _load_persisted_history()
@@ -473,6 +513,16 @@ def run() -> None:
         "입력창 내부 카운터가 실시간 기준입니다."
     )
 
+    if not (st.session_state.resume_text_input or "").strip():
+        st.info(
+            "이력서 텍스트가 비어 있습니다. 이력서 전용 요청은 실행 시 계획 중심(예: plan_only)으로 "
+            "자동 조정될 수 있습니다."
+        )
+    if not (st.session_state.jd_text_input or "").strip():
+        st.caption(
+            "JD/공고 텍스트가 없으면 공고-이력서 갭 분석의 구체성이 낮아질 수 있습니다."
+        )
+
     if st.button(
         "에이전트 실행",
         type="primary",
@@ -532,6 +582,8 @@ def run() -> None:
             response_payload=response.model_dump(),
             storage_mode=st.session_state.history_storage_mode,
         )
+        if int(record.get("record_version", 0) or 0) < HISTORY_RECORD_VERSION:
+            record["record_version"] = HISTORY_RECORD_VERSION
         if st.session_state.mask_pii_enabled:
             record = mask_pii_payload(record)
         st.session_state.input_history.append(record)
@@ -594,6 +646,19 @@ def run() -> None:
                     snippet = str(item.get("snippet", "")).strip()
                     if snippet:
                         st.caption(f"snippet: {snippet}")
+                    if st.session_state.show_reference_metadata:
+                        collected_at = str(item.get("collected_at", "") or "").strip()
+                        source_url = str(item.get("source_url", "") or "").strip()
+                        curator = str(item.get("curator", "") or "").strip()
+                        license_text = str(item.get("license", "") or "").strip()
+                        if collected_at:
+                            st.caption(f"collected_at: {collected_at}")
+                        if source_url:
+                            st.markdown(f"[source_url]({source_url})")
+                        if curator:
+                            st.caption(f"curator: {curator}")
+                        if license_text:
+                            st.caption(f"license: {license_text}")
                     if st.session_state.show_debug_meta:
                         breakdown = item.get("score_breakdown")
                         if isinstance(breakdown, dict) and breakdown:

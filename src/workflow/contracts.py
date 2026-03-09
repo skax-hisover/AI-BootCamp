@@ -29,6 +29,10 @@ class ReferenceItem(BaseModel):
     category: str | None = None
     snippet: str = ""
     score_breakdown: dict[str, float] | None = None
+    collected_at: str | None = None
+    source_url: str | None = None
+    curator: str | None = None
+    license: str | None = None
 
 
 class NodeExecutionStatus(BaseModel):

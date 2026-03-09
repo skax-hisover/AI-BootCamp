@@ -49,6 +49,10 @@ class ReferenceItem(BaseModel):
         default=None,
         description="점수 분해 정보(vector/bm25/fused/penalty/rerank boosts)",
     )
+    collected_at: str | None = Field(default=None, description="문서 수집/업로드 일시")
+    source_url: str | None = Field(default=None, description="원문 출처 URL")
+    curator: str | None = Field(default=None, description="문서 정리 담당자")
+    license: str | None = Field(default=None, description="문서 사용 라이선스/내부 정책")
 
 
 class FinalAnswer(BaseModel):

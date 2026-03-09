@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+HISTORY_RECORD_VERSION = 1
+
 
 def _sha256_short(text: str) -> str:
     return hashlib.sha256((text or "").encode("utf-8")).hexdigest()[:16]
@@ -56,6 +58,7 @@ def build_history_record(
 ) -> dict[str, Any]:
     mode = storage_mode if storage_mode in {"summary", "full"} else "summary"
     base = {
+        "record_version": HISTORY_RECORD_VERSION,
         "session_id": session_id,
         "query": query.strip(),
         "target_role": target_role,

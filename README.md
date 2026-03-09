@@ -38,10 +38,10 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **구조화 출력 내구성**: Resume/Interview/Synthesis 파싱 실패 시 노드 단위 degrade fallback
 - **근거 연결성 강화**: Resume/Interview notes에 `evidence_map` 포함, 최종 불릿에 citation(`[1][2]`) 스타일 적용
 - **그래프 체크포인팅**: LangGraph checkpointer와 `thread_id=session_id` 연동(실행 상태 복원 기반)
-- **체크포인터 역할 분리**: `MemorySaver`는 프로세스 내 런타임 복원용, 재시작 이후 영속 복원은 `session_memory.json`/`graph_state_cache.json`이 담당
-- **메모리 정책 단일화**: `session_memory.json`은 대화 턴만 저장하고, 큰 입력/노드 상태는 저장하지 않으며 그래프 결과 재사용은 `graph_state_cache.json`으로 분리
+- **체크포인터 역할 분리**: `MemorySaver`는 프로세스 내 런타임 복원용, 재시작 이후 영속 복원은 `session_memory.json`/`final_answer_cache.json`이 담당
+- **메모리 정책 단일화**: `session_memory.json`은 대화 턴만 저장하고, 큰 입력/노드 상태는 저장하지 않으며 그래프 결과 재사용은 `final_answer_cache.json`으로 분리
 - **라우팅 안정화**: Supervisor에서 "제외/전용" 키워드 1차 휴리스틱 라우팅 후, 미해당 케이스만 LLM 라우팅으로 처리
-- **최종 응답 재사용 캐시**: 파일 기반 invoke 캐시(`graph_state_cache.json` + lock)는 정규화된 최종 `ChatResponse` payload를 재사용(그래프 중간 상태 전체 저장은 아님)
+- **최종 응답 재사용 캐시**: 파일 기반 invoke 캐시(`final_answer_cache.json` + lock)는 정규화된 최종 `ChatResponse` payload를 재사용(그래프 중간 상태 전체 저장은 아님)
 - **JD-이력서 갭 도구**: `jd_resume_gap_score`(필수/우대 키워드 매칭률 + 누락 Top-N) 추가 및 Resume Agent tool loop 연동
 - **선택형 신뢰도 메타데이터**: `ChatResponse`에 `route/routing_reason/rag_low_confidence/cached_state_hit/node_status` 포함, Streamlit 디버그 토글로 표시 가능
 - **Tool Calling 능동성 명시**: `engine.py::_run_tool_loop_structured_with_trace`에서 `bind_tools(...)`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 다중 스텝 실행
@@ -87,6 +87,12 @@ Set-Location "D:\AI-BootCamp\final-project"
 pip install -r requirements-final.txt
 ```
 
+선택(한국어 형태소 분석 Okt 사용 시):
+
+```powershell
+pip install konlpy==0.6.0
+```
+
 2. 이 폴더에 `.env` 생성:
 
 ```powershell
@@ -121,7 +127,8 @@ Copy-Item .env.example .env
 - `RERANK_PROVIDER` (선택, 기본 `heuristic`; `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 `2`; top-k 내 동일 source 문서 최대 청크 수)
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 `0`; retrieval 단계 source당 청크 상한, `0`은 비활성)
-- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `true`; 배포 보안 강화를 위해 `false` 시 캐시 로드 대신 재생성 권장)
+- `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 `true`; route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 `false`로 점진적 tighten 가능)
+- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `false`; 로컬 개발에서만 필요 시 `true`로 opt-in 권장)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
 - `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 `5`; 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
@@ -201,6 +208,7 @@ python scripts/run_streamlit.py
 - 사이드바에서 실행 입력 기록 조회/삭제를 제공합니다.
 - `다시 불러오기`로 질문/직무/이력서/JD/이전 결과를 복원할 수 있습니다.
 - 사이드바에 "인덱스 사전 빌드/로드" 및 개인정보 옵션(기록 저장 토글, PII 마스킹 토글)이 있습니다.
+- 사이드바 "디버그/신뢰도 표시"에서 `참고 출처 메타데이터 표시` 토글을 켜면 references의 `collected_at/source_url/curator/license`를 함께 확인할 수 있습니다.
 - 사이드바 "지식 문서 로드 실패 요약" 버튼으로 인덱싱 중 실패한 파일 목록(`retriever_meta.json`)을 확인할 수 있습니다.
 - 디버그 모드에서 references의 `score_breakdown`(vector/bm25/fused/penalty/rerank 기여)을 확인할 수 있습니다.
 - RAG 인덱스는 디스크 캐시를 사용하므로 첫 실행은 느릴 수 있고 이후 실행은 빨라집니다.
@@ -233,7 +241,7 @@ python scripts/run_streamlit.py
   - 다중 사용자 고부하 운영에서는 외부 저장소(SQLite/Redis) + 워커 분리를 권장합니다.
 - 체크포인터 복원 범위가 헷갈릴 때
   - `MemorySaver`: 같은 프로세스에서의 그래프 상태 복원(런타임)
-  - `graph_state_cache.json`/`session_memory.json`: 프로세스 재시작 이후 재사용(영속)
+  - `final_answer_cache.json`/`session_memory.json`: 프로세스 재시작 이후 재사용(영속)
 
 ## 차별성 지표 자동화
 

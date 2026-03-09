@@ -192,3 +192,33 @@ def test_cache_record_applies_lru_trim_per_session() -> None:
     assert _cache_record_payload_for_request(record, "sig-3") == {"summary": "3"}
     assert _cache_record_payload_for_request(record, "sig-2") is None
 
+
+def test_enforce_final_answer_policy_keeps_reference_metadata_fields() -> None:
+    payload = {
+        "summary": "요약",
+        "resume_improvements": ["핵심 역량 보강"],
+        "interview_preparation": [],
+        "two_week_plan": [],
+        "references": [
+            {
+                "rank": 1,
+                "source": "sample.md",
+                "chunk_id": 3,
+                "location": "page=1",
+                "score": 0.9,
+                "category": "job_postings",
+                "snippet": "샘플",
+                "collected_at": "2026-03-09",
+                "source_url": "https://example.com",
+                "curator": "jobpilot-team",
+                "license": "CC-BY-4.0",
+            }
+        ],
+    }
+    enforced = enforce_final_answer_policy(route="resume_only", payload=payload, rag_refs=[])
+    ref = enforced["references"][0]
+    assert ref["collected_at"] == "2026-03-09"
+    assert ref["source_url"] == "https://example.com"
+    assert ref["curator"] == "jobpilot-team"
+    assert ref["license"] == "CC-BY-4.0"
+

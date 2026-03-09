@@ -65,7 +65,8 @@ class Settings:
     rerank_provider: str = "heuristic"
     rerank_max_per_source: int = 2
     retrieval_max_chunks_per_file: int = 0
-    faiss_allow_dangerous_deserialization: bool = True
+    allow_uncategorized_in_filter: bool = True
+    faiss_allow_dangerous_deserialization: bool = False
     graph_state_cache_enabled: bool = True
     graph_state_cache_bypass_contextual: bool = True
     graph_state_cache_max_per_session: int = 5
@@ -113,7 +114,8 @@ def load_settings() -> Settings:
     rerank_provider = (os.getenv("RERANK_PROVIDER") or "heuristic").strip().lower() or "heuristic"
     rerank_max_per_source = _int_env("RERANK_MAX_PER_SOURCE", 2)
     retrieval_max_chunks_per_file = _int_env("RETRIEVAL_MAX_CHUNKS_PER_FILE", 0)
-    faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", True)
+    allow_uncategorized_in_filter = _bool_env("ALLOW_UNCATEGORIZED_IN_FILTER", True)
+    faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", False)
     graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
     graph_state_cache_bypass_contextual = _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True)
     graph_state_cache_max_per_session = _int_env("GRAPH_STATE_CACHE_MAX_PER_SESSION", 5)
@@ -179,6 +181,7 @@ def load_settings() -> Settings:
         rerank_provider=rerank_provider,
         rerank_max_per_source=max(1, min(rerank_max_per_source, 5)),
         retrieval_max_chunks_per_file=max(0, min(retrieval_max_chunks_per_file, 10)),
+        allow_uncategorized_in_filter=allow_uncategorized_in_filter,
         faiss_allow_dangerous_deserialization=faiss_allow_dangerous_deserialization,
         graph_state_cache_enabled=graph_state_cache_enabled,
         graph_state_cache_bypass_contextual=graph_state_cache_bypass_contextual,

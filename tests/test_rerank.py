@@ -74,3 +74,28 @@ def test_rerank_limits_same_source_by_max_per_source() -> None:
     )
     same_count = sum(1 for item in ranked if item.source == "same.md")
     assert same_count <= 2
+
+
+def test_rerank_score_is_clipped_to_unit_interval() -> None:
+    hits = [
+        SearchHit(
+            content="백엔드 API 성능 개선과 트랜잭션 최적화 역량이 필요합니다.",
+            source="uploaded_jd_text",
+            score=0.96,
+            metadata={"category": "jd", "source_type": "jd_upload", "score_breakdown": {"fused": 0.96}},
+        )
+    ]
+    ranked = rerank_hits(
+        hits=hits,
+        query="백엔드 API 성능 개선",
+        role_hint="backend, api, server, database",
+        route_categories={"jd", "job_postings"},
+        top_k=1,
+        provider="heuristic",
+        enabled=True,
+    )
+    assert ranked
+    assert 0.0 <= ranked[0].score <= 1.0
+    breakdown = ranked[0].metadata.get("score_breakdown", {})
+    assert isinstance(breakdown, dict)
+    assert "final_post_rerank_raw" in breakdown

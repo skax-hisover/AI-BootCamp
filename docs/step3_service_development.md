@@ -40,6 +40,7 @@
 
 ```powershell
 pip install -r requirements-final.txt
+# (선택) Okt 형태소 분석 활성화 시: pip install konlpy==0.6.0
 ```
 
 ### 환경변수 설정
@@ -72,7 +73,8 @@ pip install -r requirements-final.txt
 - `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 2 / top-k 내 동일 source 문서 최대 청크 수)
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 0 / retrieval 단계 source당 청크 상한, 0이면 비활성)
-- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 true / false면 캐시 로드 대신 재생성 경로 사용)
+- `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 true / route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 false로 점진적 tighten 가능)
+- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 false / 로컬 개발에서만 필요 시 true opt-in)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회)
 - `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 5 / 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
@@ -154,13 +156,14 @@ python scripts/validate_knowledge_metadata.py --strict
 - JD 입력 경로 추가: CLI/UI/워크플로우 전 구간에 `jd_text` 전달 및 프롬프트 반영(공고-이력서 갭 비교 명시)
 - Supervisor 라우팅 고도화: `resume_only/interview_only/full/plan_only` 분류 + LangGraph 조건부 엣지 분기 적용
 - Supervisor 2단 라우팅: "면접 제외/계획 제외/이력서 제외" 등 명시 표현은 1차 휴리스틱으로 우선 반영하고, 그 외는 LLM 라우팅으로 처리
+- 라우팅 정의 상수화: 휴리스틱 키워드/제외어/LLM 라우팅 규칙 블록을 공통 상수(`src/workflow/prompts.py`)로 분리해 휴리스틱/LLM 라우터가 동일 정의 집합을 공유
 - Tool loop 가드레일 강화: 최대 N회(기본 4회) 루프 + 동일 tool+args 반복 호출 감지 시 중단 + 도구 라운드 상한 후 강제 요약 전환
 - Tool 출력 구조화: `resume_keyword_match_score`/`interview_question_bank` 결과를 JSON으로 표준화하고, Agent 프롬프트에서 1회 이상 반영 규칙을 명시
 - Plan Agent 분리: `plan_node` 추가, `full/plan_only`에서 실행해 우선순위/일정/검증 방법을 독립적으로 의사결정
 - plan_only 경로 정합성 보강: `plan_only`도 `rag_node(top_k=2 경량)`를 거쳐 근거를 확보한 뒤 Plan Agent/Synthesis로 전달
 - 세션 메모리 영속화: 메모리 JSON 파일 저장/로드로 서버 재시작 후 대화 이력 유지
 - LangGraph Checkpointer 연동: `thread_id=session_id` 기준으로 그래프 실행 상태 복원 기반 마련
-- 체크포인터 역할 분리 명시: `MemorySaver`는 프로세스 내 런타임 복원용, 서버 재시작 이후 복원/재사용은 `session_memory.json` + `graph_state_cache.json`이 담당
+- 체크포인터 역할 분리 명시: `MemorySaver`는 프로세스 내 런타임 복원용, 서버 재시작 이후 복원/재사용은 `session_memory.json` + `final_answer_cache.json`이 담당
 - RAG Agent 강화: 쿼리 리라이트, 직무 힌트 기반 문서 우선순위(스코어 부스팅), route 메타 노트 반영
 - RAG Agent 자율 보강: `rag_low_confidence`일 때 1회 재검색(쿼리 확장 + 무필터 탐색) 후 재랭크하는 로컬 복구 정책 적용
 - Resume/Interview Agent 자율 보강: `rag_low_confidence`일 때 각 노드가 로컬 쿼리로 추가 검색을 수행해 근거를 보강하고, 보강된 컨텍스트/refs를 이후 노드에 전달
@@ -173,8 +176,10 @@ python scripts/validate_knowledge_metadata.py --strict
 - route-aware 출력 규칙: `synthesis` 단계에서 라우트별 최소 섹션 규칙 적용(예: `plan_only`는 계획 중심, 불필요 섹션은 빈 배열)
 - 라우트 최소 개수 정렬: `resume_only/interview_only`는 `two_week_plan` 최소 개수를 0으로 조정해 기획 시나리오(플랜 제외)와 일치
 - Synthesis 안정화: 규칙을 필수/권장으로 분리하고, 최소 개수/빈 배열/citation 보정은 코드 후처리에서 강제
+- Synthesis citation 규칙 단일화: references는 임의 생성하지 않되 불릿에는 기본 `[1]` citation을 우선 표기하도록 지시하고, references/evidence_map 정합성은 후처리로 보정
 - 요약 정책 통일: `plan_only` 포함 모든 라우트에서 `summary`는 항상 제공(계획 전용 라우트는 1~2문장 요약)
 - 카테고리 필터 보완: route-aware 필터에 `uncategorized`를 허용해 루트 문서 데이터도 검색 누락 없이 반영
+- 카테고리 필터 운영 스위치: `ALLOW_UNCATEGORIZED_IN_FILTER`로 `uncategorized` 허용 여부를 환경별로 제어해 데이터 성숙도에 따라 잡음을 점진 축소
 - citation 강제: 최종 액션 불릿에 `[1][2]` 형태의 근거 번호 표기를 프롬프트 수준에서 요구
 - RAG 인덱스 영속화: `FAISS.save_local/load_local` + 청크/시그니처 메타 저장으로 재시작 시 인덱스 재사용
 - 인덱스 무효화 안정성 강화: corpus signature에 파일 fingerprint 반영 + `INDEX_FORCE_REBUILD` 옵션 지원
@@ -185,6 +190,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 메타데이터 강화: PDF 페이지 번호, DOCX 문단 번호, XLSX 시트/행 정보를 컨텍스트 및 refs에 노출
 - references 추적성 강화: rank/source/location/chunk_id/snippet 정보를 포함한 문자열 포맷으로 citation 연결성 향상
 - 점수 해석성 강화: references에 `score_breakdown`(vector/bm25/fused/length penalty/rerank boosts) 메타를 포함해 디버그 튜닝 근거를 제공
+- 점수 스케일 정합성: rerank 이후 점수도 0~1 범위로 클리핑해 `RAG_EVIDENCE_SCORE_THRESHOLD`의 절대값 해석을 일관되게 유지
 - references 타입 정렬: `FinalAnswer.references`와 `ChatResponse.references`를 구조화 객체 목록으로 통일해 synthesis 단계 타입 불일치 리스크를 완화
 - 한국어 BM25 개선: kiwi/konlpy 형태소 분석 옵션(설치 시 자동 활용), 미설치 시 조사 제거 기반 fallback 토크나이저 사용
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
@@ -195,13 +201,14 @@ python scripts/validate_knowledge_metadata.py --strict
 - 리랭크 확장성 분리: 휴리스틱 리랭커를 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정 기반 on/off·전략 전환 포인트 제공
 - 업로드 입력 근거 강화: `rag_node`에서 `jd_text/resume_text`를 임시 청크로 생성해 검색 후보에 혼합(ephemeral evidence)하여 공고-이력서 갭 분석의 직접 근거성을 보강
 - 업로드 이력서 카테고리 분리: `resume_text` 기반 임시 청크는 `resume_upload`로 분류해 지식 문서 카테고리(`portfolio_examples`)와 의미를 분리하고, rerank에서 별도 가중으로 반영
-- 체크포인터 실효성 보강: `MemorySaver`와 별개로 `graph_state_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
+- 체크포인터 실효성 보강: `MemorySaver`와 별개로 `final_answer_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
   - 용어 정리: 위 캐시는 "그래프 중간 상태"가 아니라 정규화된 최종 `ChatResponse` payload 재사용 캐시
 - 캐시 안전장치 추가: `GRAPH_STATE_CACHE_ENABLED`, `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
 - 도구 도메인 특화 강화: `jd_resume_gap_score` 도구를 추가해 JD 필수/우대 키워드 매칭률과 누락 역량 top-N을 Resume Agent가 정량 근거로 반영
 - 도구 매칭 신뢰도 보강: `tools.py`에 kiwi 토크나이저(설치 시) + 동의어 정규화(`RDBMS↔DB`, `Fast-API↔fastapi` 등)를 적용해 표기 변형에 대한 강건성 향상
 - Tool Calling 진입점 명확화: `_run_tool_loop_structured_with_trace()`에서 `bind_tools()`로 도구 목록을 모델에 주입하고 `tool_calls`를 모델이 자율 선택하는 흐름을 코드 주석으로 명시
 - 디버그 신뢰도 노출 확장: `ChatResponse`에 `route`, `routing_reason`, `rag_low_confidence`, `cached_state_hit`, `node_status` 옵션 필드를 추가하고 Streamlit에서 선택적으로 표시
+- 출처 메타 UX 토글: Streamlit 사이드바에서 `참고 출처 메타데이터 표시`를 켜면 references의 `collected_at/source_url/curator/license`를 선택적으로 노출
 - 노드 부분 실패 격리: Resume/Interview/Plan/Synthesis 중 일부가 fallback(degraded)되어도 전체 응답은 유지하고 `node_status`로 실패 노드와 `error_code`를 전달
 - API 에러 계약 단순화: FastAPI `exception_handler`로 `JobPilotError`를 최상위 `{error_code, detail}` 형태로 직렬화해 클라이언트 파싱 복잡도 완화
 - API 계약 명시 강화: `/chat` 엔드포인트에 `response_model=ChatResponse`를 지정해 OpenAPI 문서/클라이언트 계약 안정성을 강화

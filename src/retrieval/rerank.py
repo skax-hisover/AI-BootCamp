@@ -60,7 +60,9 @@ def rerank_hits(
         # Prioritize uploaded JD as first-class evidence for gap analysis.
         upload_boost = 0.12 if source_type == "jd_upload" else (0.08 if source_type == "resume_upload" else 0.0)
 
-        new_score = round(base_score + role_boost + category_boost + lexical_boost + upload_boost, 4)
+        raw_new_score = base_score + role_boost + category_boost + lexical_boost + upload_boost
+        # Keep post-rerank score scale in 0~1 so threshold semantics stay stable.
+        new_score = round(min(1.0, max(0.0, raw_new_score)), 4)
         score_breakdown = metadata.get("score_breakdown")
         if isinstance(score_breakdown, dict):
             metadata["score_breakdown"] = {
@@ -69,6 +71,7 @@ def rerank_hits(
                 "rerank_category_boost": round(category_boost, 4),
                 "rerank_lexical_boost": round(lexical_boost, 4),
                 "rerank_upload_boost": round(upload_boost, 4),
+                "final_post_rerank_raw": round(raw_new_score, 4),
                 "final_post_rerank": round(new_score, 4),
             }
         hit_kwargs = asdict(hit)
