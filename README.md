@@ -39,12 +39,13 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **체크포인터 역할 분리**: `MemorySaver`는 프로세스 내 런타임 복원용, 재시작 이후 영속 복원은 `session_memory.json`/`graph_state_cache.json`이 담당
 - **메모리 정책 단일화**: `session_memory.json`은 대화 턴만 저장하고, 큰 입력/노드 상태는 저장하지 않으며 그래프 결과 재사용은 `graph_state_cache.json`으로 분리
 - **라우팅 안정화**: Supervisor에서 "제외/전용" 키워드 1차 휴리스틱 라우팅 후, 미해당 케이스만 LLM 라우팅으로 처리
-- **그래프 상태 재사용 캐시**: 파일 기반 invoke 캐시(`graph_state_cache.json` + lock)로 동일 요청 재실행 시 재시작 후에도 결과 재사용
+- **최종 응답 재사용 캐시**: 파일 기반 invoke 캐시(`graph_state_cache.json` + lock)는 정규화된 최종 `ChatResponse` payload를 재사용(그래프 중간 상태 전체 저장은 아님)
 - **JD-이력서 갭 도구**: `jd_resume_gap_score`(필수/우대 키워드 매칭률 + 누락 Top-N) 추가 및 Resume Agent tool loop 연동
 - **선택형 신뢰도 메타데이터**: `ChatResponse`에 `route/routing_reason/rag_low_confidence/cached_state_hit/node_status` 포함, Streamlit 디버그 토글로 표시 가능
 - **Tool Calling 능동성 명시**: `engine.py::_run_tool_loop_structured_with_trace`에서 `bind_tools(...)`로 도구를 노출하고 모델이 `tool_calls`를 자율 선택해 다중 스텝 실행
 - **동시성 보호**: SessionMemory read/write 구간에 파일 락(`session_memory.json.lock`) 적용
 - **서비스 패키징**: FastAPI 백엔드 + Streamlit UI
+- **UI 기록 최소화 기본값**: 실행 입력 기록은 기본 `summary` 모드로 저장(원문 전체 저장은 `full` opt-in)
 - **안정성**: API 레벨 예외 처리를 통한 사용자 친화적 오류 응답
 - **오류 계약 표준화**: API/CLI/UI 공통 `error_code/detail` 페이로드 적용
 - **모듈형 코드 구조**: `src/` 하위 config/retrieval/workflow/ui/api로 재사용 가능한 구조화
@@ -102,6 +103,9 @@ Copy-Item .env.example .env
 - `SESSION_MEMORY_PII_MASK` (선택, 기본 `false`; 세션 메모리 저장 전 이메일/전화번호 마스킹)
 - `UI_HISTORY_PERSIST_ENABLED` (선택, 기본 `true`; UI 실행 기록 디스크 로드/저장 on/off)
 - `UI_HISTORY_PII_MASK` (선택, 기본 `false`; UI 실행 기록 저장 전 이메일/전화번호 마스킹)
+- `UI_HISTORY_STORAGE_MODE` (선택, 기본 `summary`; `summary|full`, 기본은 길이/해시/미리보기 + 요약 응답만 저장)
+- `UI_PAGE_ICON_MODE` (선택, 기본 `emoji`; `emoji|default`)
+- `UI_PAGE_ICON_EMOJI` (선택, 기본 `💼`; `UI_PAGE_ICON_MODE=emoji`일 때 사용)
 - `INDEX_FORCE_REBUILD` (선택, 기본 `false`; `true` 설정 시 FAISS/청크 캐시 강제 재생성)
 - `VECTOR_WEIGHT` (선택, 기본 `0.6`)
 - `BM25_WEIGHT` (선택, 기본 `0.4`)
@@ -113,6 +117,8 @@ Copy-Item .env.example .env
 - `RERANK_ENABLED` (선택, 기본 `true`; 전용 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 `heuristic`; `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 `2`; top-k 내 동일 source 문서 최대 청크 수)
+- `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 `0`; retrieval 단계 source당 청크 상한, `0`은 비활성)
+- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `true`; 배포 보안 강화를 위해 `false` 시 캐시 로드 대신 재생성 권장)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
 
@@ -145,7 +151,7 @@ Copy-Item .env.example .env
 | `curator` | 요약/정리 담당자 또는 팀 | `jobpilot-team` |
 | `license` | 사용 가능 라이선스/내부 사용 정책 | `CC-BY-4.0`, `internal-use` |
 
-#### 메타데이터 검증(선택, 강제 모드 지원)
+#### 메타데이터 검증(운영/제출 전 프리런 권장, `--strict` 강제)
 
 ```powershell
 python scripts/validate_knowledge_metadata.py --strict --max-uncategorized-ratio 0.4
@@ -153,6 +159,7 @@ python scripts/validate_knowledge_metadata.py --strict --max-uncategorized-ratio
 
 - `*.meta.json` 사이드카 파일 기준으로 필수 필드(`collected_at/source_url/curator/license`)를 검증합니다.
 - 현재 로더(`src/retrieval/documents.py`)는 본문 로딩 중심이며, 메타 필드 강제는 이 전처리 스크립트에서 담당합니다.
+- 운영 모드/제출 전에는 위 명령을 프리런 단계로 실행해 실패 시 배포/제출을 중단하는 정책을 권장합니다.
 
 3) 실행  
 - API: `python scripts/run_api.py`  
@@ -206,6 +213,7 @@ python scripts/run_streamlit.py
 - FAISS 캐시 로드 안전성(배포 관점)
   - 캐시 경로는 `data/index/faiss` 고정으로 운영하고 쓰기 권한을 최소화하세요.
   - 서비스는 `retriever_meta.json.cache_hashes`와 실제 `index.faiss/index.pkl` SHA-256을 대조 후 일치할 때만 캐시 로드를 허용합니다.
+  - 운영 배포에서 보안을 우선하면 `.env`에 `FAISS_ALLOW_DANGEROUS_DESERIALIZATION=false`를 설정해 캐시 로드 대신 재생성을 사용하세요.
   - 해시 불일치/손상 시 자동으로 인덱스를 재생성합니다.
 - `/chat`에서 API `400` 또는 `500`이 반환될 때
   - `400`: 입력/설정 이슈(예: 환경변수 누락)
@@ -228,6 +236,6 @@ python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_quer
 ```
 
 - 지표: 라우팅 정확도(`expected_route`가 있을 때), 근거 포함률, 플랜 품질률
-- 샘플 구성: 총 17건(`resume_only` 4, `interview_only` 4, `plan_only` 3, `full` 2, 모호 질의 4)으로 라우트 균형 + 경계조건을 함께 검증
+- 샘플 구성: 총 22건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 2, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
 - 기준 조정: `--min-routing-accuracy`, `--min-reference-rate`, `--min-plan-quality-rate`
 - 증빙 파일은 `--output` 옵션을 사용하면 UTF-8로 저장되어 인코딩 깨짐을 방지할 수 있습니다.

@@ -64,12 +64,17 @@ class Settings:
     rerank_enabled: bool = True
     rerank_provider: str = "heuristic"
     rerank_max_per_source: int = 2
+    retrieval_max_chunks_per_file: int = 0
+    faiss_allow_dangerous_deserialization: bool = True
     graph_state_cache_enabled: bool = True
     graph_state_cache_bypass_contextual: bool = True
     session_memory_persist_enabled: bool = True
     session_memory_pii_mask_enabled: bool = False
     ui_history_persist_enabled: bool = True
     ui_history_pii_mask_enabled: bool = False
+    ui_history_storage_mode: str = "summary"
+    ui_page_icon_mode: str = "emoji"
+    ui_page_icon_emoji: str = "💼"
     few_shot_max_examples: int = 1
 
 
@@ -104,6 +109,8 @@ def load_settings() -> Settings:
     rerank_enabled = _bool_env("RERANK_ENABLED", True)
     rerank_provider = (os.getenv("RERANK_PROVIDER") or "heuristic").strip().lower() or "heuristic"
     rerank_max_per_source = _int_env("RERANK_MAX_PER_SOURCE", 2)
+    retrieval_max_chunks_per_file = _int_env("RETRIEVAL_MAX_CHUNKS_PER_FILE", 0)
+    faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", True)
     graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
     graph_state_cache_bypass_contextual = _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True)
     session_memory_persist_enabled = _bool_env(
@@ -119,6 +126,9 @@ def load_settings() -> Settings:
         "UI_HISTORY_PII_MASK",
         _bool_env("PII_MASK_ENABLED", False),
     )
+    ui_history_storage_mode = (os.getenv("UI_HISTORY_STORAGE_MODE") or "summary").strip().lower() or "summary"
+    ui_page_icon_mode = (os.getenv("UI_PAGE_ICON_MODE") or "emoji").strip().lower() or "emoji"
+    ui_page_icon_emoji = (os.getenv("UI_PAGE_ICON_EMOJI") or "💼").strip() or "💼"
     few_shot_max_examples = _int_env("FEW_SHOT_MAX_EXAMPLES", 1)
 
     missing = []
@@ -162,11 +172,18 @@ def load_settings() -> Settings:
         rerank_enabled=rerank_enabled,
         rerank_provider=rerank_provider,
         rerank_max_per_source=max(1, min(rerank_max_per_source, 5)),
+        retrieval_max_chunks_per_file=max(0, min(retrieval_max_chunks_per_file, 10)),
+        faiss_allow_dangerous_deserialization=faiss_allow_dangerous_deserialization,
         graph_state_cache_enabled=graph_state_cache_enabled,
         graph_state_cache_bypass_contextual=graph_state_cache_bypass_contextual,
         session_memory_persist_enabled=session_memory_persist_enabled,
         session_memory_pii_mask_enabled=session_memory_pii_mask_enabled,
         ui_history_persist_enabled=ui_history_persist_enabled,
         ui_history_pii_mask_enabled=ui_history_pii_mask_enabled,
+        ui_history_storage_mode=(
+            ui_history_storage_mode if ui_history_storage_mode in {"summary", "full"} else "summary"
+        ),
+        ui_page_icon_mode=(ui_page_icon_mode if ui_page_icon_mode in {"emoji", "default"} else "emoji"),
+        ui_page_icon_emoji=ui_page_icon_emoji,
         few_shot_max_examples=max(0, min(few_shot_max_examples, 3)),
     )

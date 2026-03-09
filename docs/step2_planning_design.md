@@ -105,10 +105,12 @@
   - 안전모드 고도화: 검색 결과가 있더라도 최고 점수가 임계치 미만이면(`RAG_EVIDENCE_SCORE_THRESHOLD`) 근거 부족 모드로 전환해 보수적 표현을 우선
   - 내구성 보강: route-aware 카테고리 필터 적용 후 결과가 비면 필터 없이 재검색(fallback)해 근거 누락을 완화
   - 캐시 로드 안전성: FAISS 캐시 로드시 `retriever_meta.json`에 저장된 `cache_hashes`와 실제 `index.faiss/index.pkl` SHA-256을 대조해 일치할 때만 재사용(불일치 시 재생성)
+  - 배포 보안 옵션: 운영 환경에서는 `FAISS_ALLOW_DANGEROUS_DESERIALIZATION=false`로 캐시 로드 대신 재생성 경로를 선택할 수 있도록 설정 기반 제어
   - 카테고리 품질 진단: 인덱스 빌드 시 카테고리 분포/`uncategorized` 비중을 점검하고, 비중 과다 또는 필수 카테고리 누락 시 경고와 진단 메타를 `retriever_meta.json`에 기록
   - 루트 문서 자동 분류: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화(운영은 카테고리 하위 폴더 배치를 우선 권장)
   - 리랭크 확장성 분리: 휴리스틱 리랭킹을 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정으로 전략 on/off 및 교체 포인트를 표준화
   - 검색 다양성 제약: `RERANK_MAX_PER_SOURCE`로 top-k 내 동일 source 문서 청크 수를 제한해 references 중복을 완화
+  - 중복 제어 역할 분리: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE` 단일 정책으로 운영
   - 업로드 입력 근거 편입: `jd_text/resume_text`를 임시 청크(ephemeral evidence)로 생성해 검색 후보에 혼합하여 공고-이력서 갭 분석의 직접 근거성을 강화
   - 임시 근거 점수 파라미터화: 업로드 텍스트 점수는 `EPHEMERAL_JD_BASE_SCORE`, `EPHEMERAL_RESUME_BASE_SCORE`, `EPHEMERAL_OVERLAP_WEIGHT`로 분리해 임계치/융합 스케일과 함께 운영 튜닝 가능
   - 점수 해석성 강화: references에 `score_breakdown`(vector/bm25/fused/penalty/rerank 기여) 메타를 포함해 품질 튜닝 근거를 가시화
@@ -178,7 +180,7 @@
 | Route-aware 출력 정책 | `src/workflow/engine.py` (`route_minimums`, `normalize_final_answer_by_route`, `enforce_final_answer_policy`) | 라우트별 최소 항목/섹션 표시 규칙을 코드 후처리로 강제 |
 | 부분 실패 격리 계약 | `src/workflow/engine.py` (`derive_node_status`), `src/workflow/contracts.py` (`ChatResponse.node_status`) | 노드 단위 fallback/degraded를 응답 메타로 노출하고 전체 요청은 유지 |
 | Tool Calling 능동 실행 | `src/workflow/engine.py` (`_run_tool_loop_structured_with_trace`), `src/agents/tools.py` | `bind_tools()`로 도구를 모델에 주입하고 `tool_calls`를 모델이 자율 선택 |
-| 체크포인터/메모리 역할 분리 | `src/workflow/engine.py` (`MemorySaver`, `graph_state_cache`), `src/utils/memory.py` (`SessionMemory`) | 런타임 그래프 복원 vs 재시작 후 영속 대화/결과 캐시를 분리 운영 |
+| 체크포인터/메모리 역할 분리 | `src/workflow/engine.py` (`MemorySaver`, `graph_state_cache`), `src/utils/memory.py` (`SessionMemory`) | 런타임 그래프 복원 vs 재시작 후 영속 대화/결과 캐시를 분리 운영 (`graph_state_cache`는 중간 상태 저장소가 아니라 정규화된 최종 `ChatResponse` payload cache) |
 | RAG 안전/근거 추적 | `src/workflow/engine.py` (`rag_node`), `src/retrieval/hybrid.py`, `src/retrieval/rerank.py` | 하이브리드 검색 + 재정렬 + 저신뢰 안전모드 + 구조화 references/score_breakdown 제공 |
 | 차별성 자동평가 루프 | `scripts/evaluate_differentiation_metrics.py`, `data/eval/sample_queries.json` | 라우팅/근거 포함/플랜 품질 지표를 배치 실행으로 자동 검증 |
 

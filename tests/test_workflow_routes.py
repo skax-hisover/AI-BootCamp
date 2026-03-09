@@ -41,6 +41,19 @@ def test_plan_only_summary_is_clipped_to_one_or_two_sentences() -> None:
     assert normalized["summary"].count(".") <= 2
 
 
+def test_plan_only_summary_applies_line_and_char_guardrail() -> None:
+    payload = {
+        "summary": "첫 줄 요약\n둘째 줄 요약\n셋째 줄은 제거되어야 함",
+        "resume_improvements": [],
+        "interview_preparation": [],
+        "two_week_plan": ["p1"],
+        "references": [],
+    }
+    normalized = normalize_final_answer_by_route("plan_only", payload)
+    assert "셋째 줄" not in normalized["summary"]
+    assert len(normalized["summary"]) <= 143  # max_chars + ellipsis allowance
+
+
 def test_summary_is_not_notice_only_when_model_returns_notice_text() -> None:
     payload = {
         "summary": "법/세무/노무 등 비전문 영역은 별도 확인이 필요하며 최신 공고/회사 정책은 반드시 원문 확인이 필요합니다.",
@@ -97,6 +110,13 @@ def test_heuristic_route_from_query_plan_only_keywords() -> None:
     route = heuristic_route_from_query("전체 요약 없이 2주 계획만 간단히 작성해줘")
     assert route is not None
     assert route[0] == "plan_only"
+
+
+def test_heuristic_route_ignores_negated_exclusion_phrase() -> None:
+    route = heuristic_route_from_query("면접 제외하고 싶진 않지만 우선 이력서만 먼저 보고 싶어.")
+    # Negated exclusion should not force a heuristic route.
+    # Let the LLM router decide with full context.
+    assert route is None
 
 
 def test_normalize_final_answer_by_route_cleans_none_notice() -> None:

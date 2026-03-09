@@ -57,6 +57,9 @@ pip install -r requirements-final.txt
 - `SESSION_MEMORY_PII_MASK` (선택, 기본 false / 세션 메모리 저장 전 이메일/전화 마스킹)
 - `UI_HISTORY_PERSIST_ENABLED` (선택, 기본 true / UI 실행기록 디스크 로드·저장 on/off)
 - `UI_HISTORY_PII_MASK` (선택, 기본 false / UI 실행기록 저장 전 이메일/전화 마스킹)
+- `UI_HISTORY_STORAGE_MODE` (선택, 기본 summary / `summary|full`, 기본은 길이/해시/미리보기 + 요약 응답 저장)
+- `UI_PAGE_ICON_MODE` (선택, 기본 emoji / `emoji|default`)
+- `UI_PAGE_ICON_EMOJI` (선택, 기본 💼 / emoji 모드 아이콘)
 - `INDEX_FORCE_REBUILD` (선택, 기본 false / true 시 인덱스 강제 재생성)
 - `VECTOR_WEIGHT` (선택, 기본 0.6 / 하이브리드 벡터 점수 가중치)
 - `BM25_WEIGHT` (선택, 기본 0.4 / 하이브리드 BM25 점수 가중치)
@@ -68,6 +71,8 @@ pip install -r requirements-final.txt
 - `RERANK_ENABLED` (선택, 기본 true / 리랭크 레이어 사용 on/off)
 - `RERANK_PROVIDER` (선택, 기본 heuristic / `heuristic|cross_encoder|llm`, 현재 `cross_encoder/llm`은 heuristic fallback)
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 2 / top-k 내 동일 source 문서 최대 청크 수)
+- `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 0 / retrieval 단계 source당 청크 상한, 0이면 비활성)
+- `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 true / false면 캐시 로드 대신 재생성 경로 사용)
 - `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
 - `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회)
 
@@ -105,7 +110,7 @@ python scripts/run_streamlit.py
   ```powershell
   python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
   ```
-  - 현재 샘플 구성은 총 17건(`resume_only` 4, `interview_only` 4, `plan_only` 3, `full` 2, 모호 질의 4)으로 라우트 균형 + 경계조건을 함께 검증
+  - 현재 샘플 구성은 총 22건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 2, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
   - 샘플 질의셋의 `expected_route`가 있을 경우 Top-1 라우팅 정확도를 계산
   - `references >= 1` 비율, `two_week_plan >= 4` 비율을 함께 계산
   - 임계치 미달 시 non-zero 종료코드로 CI/배치 점검 가능
@@ -181,10 +186,12 @@ python scripts/validate_knowledge_metadata.py --strict
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
 - RAG 안전정책 코드 반영: 최고 점수가 `RAG_EVIDENCE_SCORE_THRESHOLD` 미만이면 근거 부족 모드로 전환해 보수적 표현을 우선
 - 벡터 점수 정규화 안정화: FAISS distance를 retrieval set 기준 min-max 정규화 후 BM25와 결합해 가중치 튜닝 예측 가능성 향상
+- 중복 제어 역할 분리: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE`에서 단일 강제로 운영
 - 카테고리 품질 진단 추가: `HybridRetriever.build()`에서 카테고리 분포와 `uncategorized` 비율을 점검하고, 비중 과다 시 경고를 출력하며 `retriever_meta.json`에 진단 결과 기록
 - 리랭크 확장성 분리: 휴리스틱 리랭커를 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정 기반 on/off·전략 전환 포인트 제공
 - 업로드 입력 근거 강화: `rag_node`에서 `jd_text/resume_text`를 임시 청크로 생성해 검색 후보에 혼합(ephemeral evidence)하여 공고-이력서 갭 분석의 직접 근거성을 보강
 - 체크포인터 실효성 보강: `MemorySaver`와 별개로 `graph_state_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
+  - 용어 정리: 위 캐시는 "그래프 중간 상태"가 아니라 정규화된 최종 `ChatResponse` payload 재사용 캐시
 - 캐시 안전장치 추가: `GRAPH_STATE_CACHE_ENABLED`, `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
 - 도구 도메인 특화 강화: `jd_resume_gap_score` 도구를 추가해 JD 필수/우대 키워드 매칭률과 누락 역량 top-N을 Resume Agent가 정량 근거로 반영
 - 도구 매칭 신뢰도 보강: `tools.py`에 kiwi 토크나이저(설치 시) + 동의어 정규화(`RDBMS↔DB`, `Fast-API↔fastapi` 등)를 적용해 표기 변형에 대한 강건성 향상
@@ -192,6 +199,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 디버그 신뢰도 노출 확장: `ChatResponse`에 `route`, `routing_reason`, `rag_low_confidence`, `cached_state_hit`, `node_status` 옵션 필드를 추가하고 Streamlit에서 선택적으로 표시
 - 노드 부분 실패 격리: Resume/Interview/Plan/Synthesis 중 일부가 fallback(degraded)되어도 전체 응답은 유지하고 `node_status`로 실패 노드와 `error_code`를 전달
 - API 에러 계약 단순화: FastAPI `exception_handler`로 `JobPilotError`를 최상위 `{error_code, detail}` 형태로 직렬화해 클라이언트 파싱 복잡도 완화
+- API 계약 명시 강화: `/chat` 엔드포인트에 `response_model=ChatResponse`를 지정해 OpenAPI 문서/클라이언트 계약 안정성을 강화
 - UI route-aware 안내 보강: 비활성 섹션을 숨기는 대신 라우트별 생략 안내 문구(예: resume_only에서 면접/플랜 생략)를 조건부 표시
 - 동시성 범위 확장: `ui_input_history.json` 로드/저장에도 파일 락(`ui_input_history.json.lock`)을 적용해 멀티세션 경합 내구성 강화
 - JD 입력 방어 대칭화: Streamlit에 JD 자동 압축(앞/뒤 유지) 옵션 및 목표 글자 수 설정을 추가해 긴 공고 텍스트 처리 비용을 완화
@@ -204,6 +212,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 실행 재현성 강화: `requirements-final.txt` 핵심 의존성 버전 고정 및 `.env.example` 제공
 - 도구 반영 검증 강화: `resume_node/interview_node`에서 ToolMessage(JSON) 반영 여부를 키워드/질문 기준으로 점검하고, 미반영 시 검증 피드백을 포함해 1회 재시도하도록 보완
 - `plan_only` 요약 가독성 강화: `normalize_final_answer_by_route()` 후처리에서 summary를 1~2문장(과도 길이 시 절단)으로 강제해 UI 카드 길이 편차를 안정화
+- 요약 분리 보정 가드레일: 문장 분리가 불안정한 한국어 종결형 케이스를 대비해 line(최대 2줄)/char(최대 길이) 기반 보정을 함께 적용
 - 더미 콘텐츠 완화: 최소 개수 미달 시 `"추가 권장 액션 N"` 대신 근거/입력 부족을 명시하고 경력연차·지원회사·핵심 프로젝트 등 추가 질문을 유도하는 fallback 문구로 대체
 - citation 정합성 자기검증: `synthesis_node`에서 불릿별 citation([1]~[N]) 유효성을 점검하고 미달 시 자기검증 프롬프트로 1회 재작성해 근거-문장 연결성을 강화
 - 데이터 구조 정합성 보강: `data/knowledge/job_postings|jd|interview_guides|portfolio_examples` 예시 폴더/샘플 문서를 추가해 route-aware 카테고리 필터가 실제 데이터에서도 의미 있게 동작하도록 정리

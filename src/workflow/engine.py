@@ -76,27 +76,41 @@ def heuristic_route_from_query(user_query: str) -> tuple[str, str] | None:
     def _has_any(keywords: tuple[str, ...]) -> bool:
         return any(keyword in text for keyword in keywords)
 
+    def _has_exclusion_intent(target_terms: tuple[str, ...]) -> bool:
+        """Detect explicit exclusion intent while avoiding negated contexts.
+
+        Example negations to avoid:
+        - "면접 제외하지 말고 ..."
+        - "면접 제외하고 싶진 않지만 ..."
+        - "면접은 제외가 아니고 ..."
+        """
+        exclusion_patterns = ("제외", "빼", "빼줘", "제외해")
+        for term in target_terms:
+            if not term:
+                continue
+            has_exclusion = any(f"{term} {pattern}" in text or f"{term}{pattern}" in text for pattern in exclusion_patterns)
+            if not has_exclusion:
+                continue
+            has_negation = bool(
+                re.search(
+                    rf"{re.escape(term)}.{{0,20}}(제외|빼).{{0,20}}(말|않|아니)",
+                    text,
+                )
+            )
+            if has_negation:
+                continue
+            return True
+        return False
+
     resume_only_markers = (
         "이력서만",
         "이력서 개선만",
         "이력서만 봐",
-        "면접 제외",
-        "면접은 제외",
-        "면접 빼",
-        "플랜 제외",
-        "계획 제외",
-        "2주 계획 제외",
     )
     interview_only_markers = (
         "면접만",
         "면접 질문만",
         "면접 준비만",
-        "이력서 제외",
-        "이력서는 제외",
-        "이력서 빼",
-        "플랜 제외",
-        "계획 제외",
-        "2주 계획 제외",
     )
     plan_only_markers = (
         "계획만",
@@ -107,9 +121,9 @@ def heuristic_route_from_query(user_query: str) -> tuple[str, str] | None:
         "전체 요약 없이",
     )
 
-    exclude_resume = _has_any(("이력서 제외", "이력서는 제외", "이력서 빼", "이력서 제외해"))
-    exclude_interview = _has_any(("면접 제외", "면접은 제외", "면접 빼", "면접 제외해"))
-    exclude_plan = _has_any(("플랜 제외", "계획 제외", "2주 계획 제외", "실행계획 제외"))
+    exclude_resume = _has_exclusion_intent(("이력서", "자소서", "포트폴리오"))
+    exclude_interview = _has_exclusion_intent(("면접", "질문"))
+    exclude_plan = _has_exclusion_intent(("플랜", "계획", "2주 계획", "실행계획"))
     want_resume = _has_any(("이력서", "자소서", "포트폴리오"))
     want_interview = _has_any(("면접", "질문", "답변"))
     want_plan = _has_any(("계획", "플랜", "로드맵", "2주"))
@@ -170,7 +184,7 @@ def _split_summary_sentences(text: str) -> list[str]:
     if len(sentences) <= 1:
         sentences = [
             chunk.strip()
-            for chunk in re.split(r"(?<=다\.)\s+|(?<=요\.)\s+", normalized)
+            for chunk in re.split(r"(?<=다\.)\s+|(?<=요\.)\s+|(?<=함\.)\s+|(?<=임\.)\s+", normalized)
             if chunk.strip()
         ]
     return sentences or [normalized]
@@ -178,11 +192,23 @@ def _split_summary_sentences(text: str) -> list[str]:
 
 def _enforce_plan_only_summary(summary: str, max_chars: int = 140) -> str:
     base = "요청에 따라 2주 실행계획 중심으로 핵심만 요약해 제공합니다."
-    normalized = " ".join(str(summary or "").split()).strip()
+    raw_text = str(summary or "")
+    normalized = " ".join(raw_text.split()).strip()
     if not normalized:
         normalized = base
+    line_units = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    if line_units:
+        clipped = "\n".join(line_units[:2]).strip()
+    else:
+        clipped = ""
     sentences = _split_summary_sentences(normalized)
-    clipped = " ".join(sentences[:2]).strip() if sentences else base
+    if not clipped:
+        clipped = " ".join(sentences[:2]).strip() if sentences else base
+    else:
+        # If raw lines are too coarse, still prefer sentence-level concise summary.
+        sentence_candidate = " ".join(sentences[:2]).strip() if sentences else ""
+        if sentence_candidate and len(sentence_candidate) <= len(clipped):
+            clipped = sentence_candidate
     if len(clipped) > max_chars:
         clipped = clipped[:max_chars].rstrip() + "..."
     return clipped or base
@@ -624,12 +650,12 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
     plan_llm = get_chat_model(temperature=0.15)
     synthesis_llm = get_chat_model(temperature=0.1)
     resume_system_prompt = (
-        "You are Resume Agent. Focus on resume/JD gap analysis, use tools when helpful, "
-        "and output only schema-compliant Korean results."
+        "당신은 Resume Agent입니다. 이력서/JD 갭 분석에 집중하고 필요 시 도구를 자율 호출하세요. "
+        "출력은 반드시 한국어로, 스키마를 준수한 구조화 결과만 반환하세요."
     )
     interview_system_prompt = (
-        "You are Interview Agent. Focus on interview coaching grounded in evidence, "
-        "use tools when helpful, and output only schema-compliant Korean results."
+        "당신은 Interview Agent입니다. 근거 기반 면접 코칭에 집중하고 필요 시 도구를 자율 호출하세요. "
+        "출력은 반드시 한국어로, 스키마를 준수한 구조화 결과만 반환하세요."
     )
     resume_few_shot_bank = {
         "backend": """
@@ -1070,7 +1096,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         route_key = (route or "full").lower()
         fallback_category = {"uncategorized"}
         if route_key == "resume_only":
-            return {"job_postings", "jd", "portfolio_examples", "resume_examples"} | fallback_category
+            return {"job_postings", "jd", "portfolio_examples"} | fallback_category
         if route_key == "interview_only":
             return {"interview_guides", "job_postings", "jd"} | fallback_category
         if route_key == "plan_only":
@@ -1127,7 +1153,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                         source=source,
                         score=score,
                         metadata={
-                            "category": "jd" if source_type == "jd_upload" else "resume_examples",
+                            "category": "jd" if source_type == "jd_upload" else "portfolio_examples",
                             "source_type": source_type,
                             "location": f"inline_chunk={idx}",
                             "chunk_id": start_chunk_id - idx,
@@ -1159,6 +1185,11 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         route = state.get("route", "full")
         retrieval_top_k = 2 if route == "plan_only" else 4
         query_limit = 2 if route == "plan_only" else 3
+        retrieval_source_cap = (
+            settings.retrieval_max_chunks_per_file
+            if not settings.rerank_enabled
+            else 0
+        )
         jd_text = (state.get("jd_text") or "").strip()
         resume_text = (state.get("resume_text") or "").strip()
         category_filter = _category_filter_for_route(route)
@@ -1199,10 +1230,16 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 candidate,
                 top_k=retrieval_top_k,
                 category_filter=category_filter,
+                max_chunks_per_file=retrieval_source_cap,
             )
             # Fallback: if route-aware filter over-prunes results, retry without filter.
             candidate_hits = (
-                retriever.search(candidate, top_k=retrieval_top_k, category_filter=None)
+                retriever.search(
+                    candidate,
+                    top_k=retrieval_top_k,
+                    category_filter=None,
+                    max_chunks_per_file=retrieval_source_cap,
+                )
                 if (category_filter and not filtered_hits)
                 else filtered_hits
             )
@@ -1246,6 +1283,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
                 recovery_query,
                 top_k=retrieval_top_k + 1,
                 category_filter=None,
+                max_chunks_per_file=retrieval_source_cap,
             )
             for hit in recovery_hits:
                 key = f"{hit.source}::{hit.content[:120]}"
@@ -1712,7 +1750,8 @@ class JobPilotService:
         )
         self.graph_state_cache_path = settings.index_dir / "graph_state_cache.json"
         self.graph_state_cache_lock = FileLock(str(settings.index_dir / "graph_state_cache.json.lock"))
-        # Persistent cache for cross-restart reuse of final graph output per request signature.
+        # NOTE: Despite the file name, this is a final-answer payload cache (normalized ChatResponse),
+        # not a full LangGraph node-by-node checkpoint store.
         self.retriever = HybridRetriever.build()
         self.graph = build_graph(retriever=self.retriever, memory=self.memory)
 
@@ -1770,6 +1809,8 @@ class JobPilotService:
         record = cache.get(req.session_id, {})
         if not isinstance(record, dict):
             return None
+        if str(record.get("cache_kind", "")) != "final_answer_payload_v1":
+            return None
         if record.get("signature") != self._request_signature(req):
             return None
         payload = record.get("payload")
@@ -1800,6 +1841,7 @@ class JobPilotService:
         with self.graph_state_cache_lock:
             cache = self._load_graph_state_cache()
             cache[req.session_id] = {
+                "cache_kind": "final_answer_payload_v1",
                 "signature": self._request_signature(req),
                 "payload": payload,
             }

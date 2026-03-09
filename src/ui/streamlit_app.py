@@ -14,6 +14,7 @@ from filelock import FileLock
 
 from src.common import JobPilotError
 from src.config import load_settings
+from src.ui.history_record import build_history_record
 from src.ui.input_merge import merge_uploaded_text
 from src.utils.pii import mask_pii_payload
 from src.workflow import ChatRequest, JobPilotService
@@ -166,11 +167,21 @@ def _upload_signature(uploaded_file) -> str:
     return f"{uploaded_file.name}:{len(data)}:{digest}"
 
 
+def _resolve_page_icon(settings) -> str | None:
+    if settings.ui_page_icon_mode == "default":
+        return None
+    return settings.ui_page_icon_emoji or "💼"
+
+
 def run() -> None:
-    st.set_page_config(page_title="JobPilot AI", page_icon="💼", layout="wide")
+    settings = load_settings()
+    page_icon = _resolve_page_icon(settings)
+    if page_icon is None:
+        st.set_page_config(page_title="JobPilot AI", layout="wide")
+    else:
+        st.set_page_config(page_title="JobPilot AI", page_icon=page_icon, layout="wide")
     st.title("JobPilot AI - 취업/이직 멀티 에이전트 코파일럿")
     st.caption("Resume Agent + Interview Agent + RAG Agent")
-    settings = load_settings()
 
     if "session_id" not in st.session_state:
         st.session_state.session_id = f"session-{uuid4().hex[:8]}"
@@ -214,6 +225,8 @@ def run() -> None:
         st.session_state.last_jd_upload_sig = ""
     if "show_debug_meta" not in st.session_state:
         st.session_state.show_debug_meta = False
+    if "history_storage_mode" not in st.session_state:
+        st.session_state.history_storage_mode = settings.ui_history_storage_mode
 
     with st.sidebar:
         st.subheader("입력 설정")
@@ -238,7 +251,8 @@ def run() -> None:
                     st.markdown(f"**{idx}. {item['query']}**")
                     st.caption(
                         f"직무: {item['target_role']} | 세션: {item['session_id']} | "
-                        f"이력서 길이: {item['resume_len']}자 | JD 길이: {item.get('jd_len', 0)}자"
+                        f"이력서 길이: {item['resume_len']}자 | JD 길이: {item.get('jd_len', 0)}자 | "
+                        f"저장모드: {item.get('storage_mode', 'full')}"
                     )
                     col_a, col_b = st.columns(2)
                     if col_a.button("다시 불러오기", key=f"load_{real_idx}", use_container_width=True):
@@ -326,6 +340,15 @@ def run() -> None:
                 "저장 전 이메일/전화번호 마스킹",
                 key="mask_pii_enabled",
                 help="실행 입력 기록 저장 전 민감정보를 [EMAIL_MASKED]/[PHONE_MASKED]로 치환합니다.",
+            )
+            st.radio(
+                "기록 저장 모드",
+                ["summary", "full"],
+                key="history_storage_mode",
+                help=(
+                    "summary(기본): 텍스트 원문 대신 길이/해시/미리보기 + 요약 응답만 저장. "
+                    "full: 입력/응답 원문 전체 저장."
+                ),
             )
             if st.button("인덱스 사전 빌드/로드", use_container_width=True):
                 with st.spinner("지식 인덱스 사전 빌드/로드 중입니다..."):
@@ -535,16 +558,15 @@ def run() -> None:
             st.error(f"서비스 실행 중 예기치 못한 오류가 발생했습니다: {exc}")
             return
 
-        record = {
-            "session_id": st.session_state.session_id,
-            "query": query.strip(),
-            "target_role": target_role,
-            "resume_text": resume_text_for_run,
-            "jd_text": jd_text_for_run,
-            "resume_len": len(resume_text_for_run),
-            "jd_len": len(jd_text_for_run),
-            "response": response.model_dump(),
-        }
+        record = build_history_record(
+            session_id=st.session_state.session_id,
+            query=query,
+            target_role=target_role,
+            resume_text=resume_text_for_run,
+            jd_text=jd_text_for_run,
+            response_payload=response.model_dump(),
+            storage_mode=st.session_state.history_storage_mode,
+        )
         if st.session_state.mask_pii_enabled:
             record = mask_pii_payload(record)
         st.session_state.input_history.append(record)

@@ -8,7 +8,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from src.common import JobPilotError
-from src.workflow import ChatRequest, JobPilotService
+from src.workflow import ChatRequest, ChatResponse, JobPilotService
 
 
 @lru_cache(maxsize=1)
@@ -44,7 +44,7 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/chat")
-def chat(req: ChatRequest):
+@app.post("/chat", response_model=ChatResponse)
+def chat(req: ChatRequest) -> ChatResponse:
     service = get_service()
-    return service.run(req).model_dump()
+    return service.run(req)

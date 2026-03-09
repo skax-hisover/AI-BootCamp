@@ -302,7 +302,7 @@ class HybridRetriever:
                     vector_db = FAISS.load_local(
                         str(faiss_dir),
                         embeddings,
-                        allow_dangerous_deserialization=True,
+                        allow_dangerous_deserialization=settings.faiss_allow_dangerous_deserialization,
                     )
                     raw_chunks = json.loads(chunks_path.read_text(encoding="utf-8"))
                     if isinstance(raw_chunks, list):
@@ -480,11 +480,12 @@ class HybridRetriever:
         ranked = sorted(rescored, key=lambda x: x[1], reverse=True)
         hits: list[SearchHit] = []
         per_source_count: dict[str, int] = {}
+        apply_source_cap = max_chunks_per_file > 0
         for idx, score in ranked:
             doc = self.chunks[idx]
             source = str(doc.metadata.get("filename", "unknown"))
             current_count = per_source_count.get(source, 0)
-            if current_count >= max_chunks_per_file:
+            if apply_source_cap and current_count >= max_chunks_per_file:
                 continue
             per_source_count[source] = current_count + 1
             hits.append(

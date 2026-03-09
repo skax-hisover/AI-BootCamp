@@ -52,6 +52,34 @@ def _requires_plan(route: str) -> bool:
     return route_key in {"full", "plan_only"}
 
 
+def _normalized_route(value: str) -> str:
+    return (value or "").strip().lower()
+
+
+def _confusion_matrix(samples: list[RoutingSampleResult]) -> tuple[list[str], dict[str, dict[str, int]]]:
+    labels = sorted(
+        {
+            _normalized_route(item.expected_route)
+            for item in samples
+            if _normalized_route(item.expected_route)
+        }
+        | {
+            _normalized_route(item.predicted_route)
+            for item in samples
+            if _normalized_route(item.predicted_route)
+        }
+    )
+    matrix: dict[str, dict[str, int]] = {
+        expected: {predicted: 0 for predicted in labels} for expected in labels
+    }
+    for item in samples:
+        expected = _normalized_route(item.expected_route)
+        predicted = _normalized_route(item.predicted_route)
+        if expected in matrix and predicted in matrix[expected]:
+            matrix[expected][predicted] += 1
+    return labels, matrix
+
+
 def main() -> None:
     args = parse_args()
     cases_path = Path(args.cases)
@@ -89,7 +117,10 @@ def main() -> None:
         eval_route = (expected_route or predicted_route).strip().lower()
         if expected_route:
             routing_samples.append(
-                RoutingSampleResult(expected_route=expected_route, predicted_route=predicted_route)
+                RoutingSampleResult(
+                    expected_route=_normalized_route(expected_route),
+                    predicted_route=_normalized_route(predicted_route),
+                )
             )
         sample = AnswerQualitySample(
             references=[str(item) for item in references],
@@ -122,6 +153,28 @@ def main() -> None:
         report_lines.append("Routing accuracy: n/a (expected_route not provided)")
     report_lines.append(f"Reference inclusion rate: {ref_rate:.2%}")
     report_lines.append(f"Plan quality rate (full/plan_only): {plan_rate:.2%}")
+    if routing_samples:
+        labels, matrix = _confusion_matrix(routing_samples)
+        expected_labels = sorted({_normalized_route(item.expected_route) for item in routing_samples})
+        report_lines.append("")
+        report_lines.append("Routing confusion matrix (rows=expected, cols=predicted):")
+        header = ["expected\\pred", *labels]
+        report_lines.append(" | ".join(header))
+        report_lines.append(" | ".join(["---"] * len(header)))
+        for expected in labels:
+            row = [expected, *[str(matrix[expected][predicted]) for predicted in labels]]
+            report_lines.append(" | ".join(row))
+        report_lines.append("")
+        report_lines.append("Route recall:")
+        recalls: list[float] = []
+        for route in expected_labels:
+            total = sum(matrix[route].values())
+            tp = matrix[route].get(route, 0)
+            recall = (tp / total) if total else 0.0
+            recalls.append(recall)
+            report_lines.append(f"- {route}: {recall:.2%} ({tp}/{total})")
+        macro_recall = (sum(recalls) / len(recalls)) if recalls else 0.0
+        report_lines.append(f"- macro_recall: {macro_recall:.2%}")
     report_lines.append("")
     report_lines.append("=== Case Details ===")
     for item in details:
