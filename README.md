@@ -27,6 +27,7 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **에이전트 자율 정책**: 이력서 텍스트가 없을 때 Resume/Interview 에이전트의 로컬 fallback 정책 적용
 - **RAG**: 문서 로딩(`.txt/.md/.csv/.pdf/.docx/.xlsx`), 청킹, FAISS 벡터 검색 + BM25 키워드 검색
 - **RAG 품질**: 인덱스 영속화(`data/index/faiss`), 메타데이터 기반 컨텍스트(page/paragraph/sheet/row), route-aware 카테고리 필터 + no-hit 재검색 fallback, 전용 리랭크 레이어
+- **로더 메타데이터 병합**: `src/retrieval/documents.py`에서 문서별 `*.meta.json` sidecar의 최소 필드(`collected_at/source_url/curator/license`)를 병합 로딩하고, sidecar 누락/오류 시 경고를 출력해 추적성을 유지
 - **RAG 점수 안정성**: 하이브리드 결합 전 FAISS distance min-max 정규화 적용으로 가중치 튜닝 예측성 향상
 - **RAG 추적성**: references에 rank/source/chunk/location/snippet 정보를 포함해 citation-근거 연결 강화
 - **References 타입 정렬**: `FinalAnswer.references`와 `ChatResponse.references`를 동일한 구조화 객체 목록으로 맞춰 synthesis 단계 타입 흔들림 방지

@@ -121,7 +121,7 @@ python scripts/run_streamlit.py
 - 라이선스 원칙: 공개 활용 가능 문서/직접 작성 요약본 우선, 저작권 제약 원문은 전문 저장 지양
 - 안전장치: 근거 부족 시 일반 조언으로 전환하고 단정형 표현 제한, 필요 시 문서 업로드 안내
 - 메타데이터 적용 수준 구분:
-  - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 중심 로딩(메타 필드 강제 파싱 없음)
+  - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 로딩 시 문서별 `*.meta.json` sidecar를 병합하고, 최소 필드(`collected_at/source_url/curator/license`)를 metadata에 반영(누락/파싱 오류 시 경고)
   - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증(`--strict` 시 실패 코드 반환)
 
 ### 메타데이터 검증 실행(선택)

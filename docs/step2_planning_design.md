@@ -134,7 +134,7 @@
 | `curator` | 요약/정리 담당자 또는 팀 | `jobpilot-team` |
 | `license` | 사용 가능 라이선스/내부 사용 정책 | `CC-BY-4.0`, `internal-use` |
   - 적용 수준 구분:
-    - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 중심 로딩(메타 필드 강제 파싱 없음)
+    - **권장(현재 로더)**: `src/retrieval/documents.py`는 본문/카테고리 로딩 시 문서별 `*.meta.json` sidecar를 병합하고, 최소 필드(`collected_at/source_url/curator/license`)를 metadata에 반영(누락/파싱 오류 시 경고)
     - **강제/검증(전처리 스크립트)**: `scripts/validate_knowledge_metadata.py`로 `*.meta.json` 필수 필드(`collected_at/source_url/curator/license`)를 배치 검증하고 `--max-uncategorized-ratio` 임계치 초과 시 경고/실패를 강제
 
 - **RAG 안전 정책(신뢰성 설계)**

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Iterable
 
@@ -11,6 +12,36 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".csv", ".pdf", ".docx", ".xlsx"}
+REQUIRED_SIDECAR_META_FIELDS = ("collected_at", "source_url", "curator", "license")
+
+
+def _load_sidecar_metadata(path: Path) -> dict[str, str]:
+    """Load optional *.meta.json sidecar and keep only required metadata fields."""
+    sidecar = path.with_name(f"{path.name}.meta.json")
+    if not sidecar.exists():
+        print(f"[WARN] Missing metadata sidecar for {path.name}: {sidecar.name}")
+        return {}
+    try:
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    except Exception as exc:
+        print(f"[WARN] Invalid metadata sidecar for {path.name}: {exc}")
+        return {}
+    if not isinstance(payload, dict):
+        print(f"[WARN] Invalid metadata sidecar for {path.name}: root must be object")
+        return {}
+
+    merged: dict[str, str] = {}
+    missing_fields: list[str] = []
+    for field in REQUIRED_SIDECAR_META_FIELDS:
+        value = payload.get(field)
+        if isinstance(value, str) and value.strip():
+            merged[field] = value.strip()
+        else:
+            missing_fields.append(field)
+    if missing_fields:
+        missing = ", ".join(missing_fields)
+        print(f"[WARN] Incomplete metadata sidecar for {path.name}: missing [{missing}]")
+    return merged
 
 
 def _infer_root_category_from_filename(path: Path) -> str:
@@ -155,6 +186,7 @@ def load_documents_with_report(knowledge_dir: Path) -> tuple[list[Document], lis
             if len(relative.parts) > 1
             else _infer_root_category_from_filename(path)
         )
+        sidecar_meta = _load_sidecar_metadata(path)
         for section in sections:
             content = str(section.get("content", "")).strip()
             if not content:
@@ -168,6 +200,7 @@ def load_documents_with_report(knowledge_dir: Path) -> tuple[list[Document], lis
             }
             if isinstance(section_meta, dict):
                 metadata.update(section_meta)
+            metadata.update(sidecar_meta)
 
             docs.append(
                 Document(
