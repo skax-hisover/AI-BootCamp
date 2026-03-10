@@ -267,36 +267,44 @@ flowchart TD
 - 사용자 요청 -> Agent 처리 -> RAG 검색 -> 응답 생성 -> UI 출력까지 흐름
 
 ```mermaid
+%%{init: {
+  "themeVariables": { "fontSize": "17px" },
+  "sequence": {
+    "actorFontSize": 18,
+    "messageFontSize": 16,
+    "noteFontSize": 15
+  }
+}}%%
 sequenceDiagram
     participant User
-    participant UI as Streamlit UI
-    participant Sup as Supervisor
-    participant Rag as RAG Agent
-    participant Res as Resume Agent
-    participant Int as Interview Agent
-    participant Plan as Plan Agent
+    participant UI as Streamlit<br/>UI
+    participant Sup as Supervisor<br/>Agent
+    participant Rag as RAG<br/>Agent
+    participant Res as Resume<br/>Agent
+    participant Int as Interview<br/>Agent
+    participant Plan as Plan<br/>Agent
     participant Syn as Synthesis
 
     User->>UI: 질문/문서 업로드
-    UI->>Sup: 요청 전달 (사용자 의도 분류 시작)
-    Sup->>Rag: route 결정 후 RAG 검색 실행 (필요 근거 수집 단계)
-    Rag-->>Sup: RAG context/references + route 유지 (근거 요약과 출처 반환)
+    UI->>Sup: 요청 전달<br/>(사용자 의도 분류 시작)
+    Sup->>Rag: route 결정 후 RAG 검색 실행<br/>(필요 근거 수집 단계)
+    Rag-->>Sup: RAG context/references + route 유지<br/>(근거 요약과 출처 반환)
     alt route=full
-        Rag->>Res: resume_notes 생성 (이력서 개선안 도출)
-        Res->>Int: interview_notes 생성 (면접 대비 포인트 도출)
-        Int->>Plan: plan_notes 생성 (2주 실행 계획 도출)
-        Plan->>Syn: specialist 결과 전달 (최종 합성 입력)
+        Rag->>Res: resume_notes 생성<br/>(이력서 개선안 도출)
+        Res->>Int: interview_notes 생성<br/>(면접 대비 포인트 도출)
+        Int->>Plan: plan_notes 생성<br/>(2주 실행 계획 도출)
+        Plan->>Syn: specialist 결과 전달<br/>(최종 합성 입력)
     else route=resume_only
-        Rag->>Res: resume_notes 생성 (이력서 개선만 수행)
+        Rag->>Res: resume_notes 생성<br/>(이력서 개선만 수행)
         Res->>Syn: specialist 결과 전달
     else route=interview_only
-        Rag->>Int: interview_notes 생성 (면접 대비만 수행)
+        Rag->>Int: interview_notes 생성<br/>(면접 대비만 수행)
         Int->>Syn: specialist 결과 전달
     else route=plan_only
-        Rag->>Plan: plan_notes 생성 (실행 계획만 수행)
+        Rag->>Plan: plan_notes 생성<br/>(실행 계획만 수행)
         Plan->>Syn: specialist 결과 전달
     end
-    Syn-->>UI: 통합 결과(JSON, node_status 포함) 반환
+    Syn-->>UI: 통합 결과(JSON, node_status 포함)<br/>반환
     UI-->>User: 카드형 결과/체크리스트 출력
 ```
 
