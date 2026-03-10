@@ -51,6 +51,20 @@ def _is_sensitive_key(key: str) -> bool:
     return any(token in upper for token in sensitive_tokens)
 
 
+def _is_true_like(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _dangerous_faiss_setting_warning(values: dict[str, str]) -> str | None:
+    raw = values.get("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", "")
+    if _is_true_like(raw):
+        return (
+            "[WARN] FAISS_ALLOW_DANGEROUS_DESERIALIZATION=true detected. "
+            "Use false for submission/deployment safety."
+        )
+    return None
+
+
 def main() -> None:
     args = parse_args()
     env_path = (PROJECT_ROOT / args.env_path).resolve()
@@ -72,6 +86,9 @@ def main() -> None:
             "Do not include it in submission package."
         )
         values = _load_key_values(env_path)
+        dangerous_faiss_warning = _dangerous_faiss_setting_warning(values)
+        if dangerous_faiss_warning:
+            warnings.append(dangerous_faiss_warning)
         populated_sensitive = [
             key
             for key, value in values.items()

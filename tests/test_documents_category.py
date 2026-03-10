@@ -1,6 +1,9 @@
 from pathlib import Path
 
+from langchain_core.documents import Document
+
 from src.retrieval.documents import _infer_root_category_from_filename, load_documents_with_report
+from src.retrieval.hybrid import _category_diagnostics
 
 
 def test_infer_root_category_from_filename_job_postings() -> None:
@@ -53,3 +56,17 @@ def test_load_documents_warns_when_sidecar_missing(tmp_path: Path, capsys) -> No
 
     assert len(docs) == 1
     assert "Missing metadata sidecar for resume_tips.md" in captured.out
+
+
+def test_category_diagnostics_respects_warn_threshold() -> None:
+    chunks = [
+        Document(page_content="a", metadata={"category": "uncategorized"}),
+        Document(page_content="b", metadata={"category": "uncategorized"}),
+        Document(page_content="c", metadata={"category": "job_postings"}),
+        Document(page_content="d", metadata={"category": "jd"}),
+    ]
+    relaxed = _category_diagnostics(chunks, uncategorized_warn_threshold=0.6)
+    strict = _category_diagnostics(chunks, uncategorized_warn_threshold=0.4)
+    assert relaxed["uncategorized_ratio"] == 0.5
+    assert relaxed["category_quality_warning"] != "uncategorized_ratio_high"
+    assert strict["category_quality_warning"] == "uncategorized_ratio_high"

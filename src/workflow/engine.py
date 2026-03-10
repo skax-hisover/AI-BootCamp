@@ -33,8 +33,10 @@ from src.workflow.contracts import (
 )
 from src.workflow.prompts import (
     EXCLUSION_TERMS,
+    EXCLUSION_PATTERNS,
     INTENT_KEYWORDS,
     INTERVIEW_ONLY_MARKERS,
+    NEGATION_PATTERNS,
     PLAN_ONLY_MARKERS,
     PROMPT_RULE_ALL_FIELDS_KOREAN,
     PROMPT_RULE_RESULT_ONLY,
@@ -108,23 +110,38 @@ def heuristic_route_from_query(user_query: str) -> tuple[str, str] | None:
         - "면접 제외하고 싶진 않지만 ..."
         - "면접은 제외가 아니고 ..."
         """
-        exclusion_patterns = ("제외", "빼", "빼줘", "제외해")
         for term in target_terms:
             if not term:
                 continue
-            has_exclusion = any(f"{term} {pattern}" in text or f"{term}{pattern}" in text for pattern in exclusion_patterns)
+            has_exclusion = any(f"{term} {pattern}" in text or f"{term}{pattern}" in text for pattern in EXCLUSION_PATTERNS)
             if not has_exclusion:
                 continue
-            has_negation = bool(
+            has_negation = any(
                 re.search(
-                    rf"{re.escape(term)}.{{0,20}}(제외|빼).{{0,20}}(말|않|아니)",
+                    rf"{re.escape(term)}.{{0,24}}(제외|빼).{{0,24}}{re.escape(neg)}",
                     text,
                 )
+                for neg in NEGATION_PATTERNS
             )
             if has_negation:
                 continue
             return True
         return False
+
+    def _has_plan_only_marker_intent() -> bool:
+        if not _has_any(PLAN_ONLY_MARKERS):
+            return False
+        plan_term_window = "|".join(re.escape(term) for term in EXCLUSION_TERMS["plan"] if term)
+        has_negated_plan_exclusion = any(
+            re.search(
+                rf"({plan_term_window}).{{0,20}}(제외|빼|말고).{{0,20}}{re.escape(neg)}",
+                text,
+            )
+            for neg in NEGATION_PATTERNS
+        )
+        if has_negated_plan_exclusion:
+            return False
+        return True
 
     exclude_resume = _has_exclusion_intent(EXCLUSION_TERMS["resume"])
     exclude_interview = _has_exclusion_intent(EXCLUSION_TERMS["interview"])
@@ -133,7 +150,7 @@ def heuristic_route_from_query(user_query: str) -> tuple[str, str] | None:
     want_interview = _has_any(INTENT_KEYWORDS["interview"])
     want_plan = _has_any(INTENT_KEYWORDS["plan"])
 
-    if _has_any(PLAN_ONLY_MARKERS):
+    if _has_plan_only_marker_intent():
         return ("plan_only", "휴리스틱 라우팅: 계획 전용 요청 키워드 감지")
     if _has_any(RESUME_ONLY_MARKERS) and not want_interview:
         return ("resume_only", "휴리스틱 라우팅: 이력서 전용/면접 제외 키워드 감지")
@@ -536,6 +553,18 @@ def derive_node_status(route: str, state: AgentState) -> dict[str, dict[str, Any
     if run_plan:
         node_status["plan"]["status"] = "ok"
 
+    def _fill_skip_detail(node_name: str) -> None:
+        if node_status.get(node_name, {}).get("status") != "skipped":
+            return
+        detail = f"Skipped by route policy (route={route_key})."
+        if route_key == "plan_only" and node_name in {"resume", "interview"}:
+            detail = f"Skipped by route policy (route={route_key}; plan-focused execution)."
+        elif route_key == "resume_only" and node_name in {"interview", "plan"}:
+            detail = f"Skipped by route policy (route={route_key}; resume-focused execution)."
+        elif route_key == "interview_only" and node_name in {"resume", "plan"}:
+            detail = f"Skipped by route policy (route={route_key}; interview-focused execution)."
+        node_status[node_name]["detail"] = detail
+
     def _mark_if_fallback(node_name: str, payload: dict[str, Any] | None) -> None:
         if not payload:
             node_status[node_name]["status"] = "degraded"
@@ -556,6 +585,8 @@ def derive_node_status(route: str, state: AgentState) -> dict[str, dict[str, Any
         _mark_if_fallback("interview", state.get("interview_notes"))
     if run_plan:
         _mark_if_fallback("plan", state.get("plan_notes"))
+    for skipped_node in ("resume", "interview", "plan"):
+        _fill_skip_detail(skipped_node)
 
     final_answer = state.get("final_answer") or {}
     if isinstance(final_answer, dict):
@@ -1050,69 +1081,116 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         shortened = [str(item)[:240] for item in tool_outputs[:limit]]
         return json.dumps(shortened, ensure_ascii=False)
 
+    def _normalize_fallback_reason(reason: Any, error_code: str) -> str:
+        text = " ".join(str(reason or "").split()).strip()
+        if not text:
+            return error_code
+        text = re.sub(r"\bErrorCodes\.", "", text)
+        if text.startswith(error_code):
+            return text
+        return f"{error_code}: {text}"
+
+    def _as_string_list(values: list[Any] | None, *, fallback: str, max_items: int = 4) -> list[str]:
+        normalized: list[str] = []
+        for raw in list(values or []):
+            item = " ".join(str(raw or "").split()).strip()
+            if item:
+                normalized.append(item)
+            if len(normalized) >= max_items:
+                break
+        return normalized if normalized else [fallback]
+
+    def _fallback_rag_snippets(state: AgentState, reason: str, *, max_items: int = 2) -> list[str]:
+        reason_line = " ".join(str(reason or "").split()).strip()
+        rag_context = " ".join(str(state.get("rag_context", "") or "").split()).strip()
+        snippets = _as_string_list(
+            [reason_line, rag_context[:300] if rag_context else "RAG 근거 없음"],
+            fallback="RAG 근거 없음",
+            max_items=max_items,
+        )
+        return snippets
+
     def _fallback_resume_notes(state: AgentState, reason: str) -> dict[str, Any]:
+        normalized_reason = _normalize_fallback_reason(reason, ErrorCodes.STRUCTURED_OUTPUT_RESUME_FALLBACK)
         return {
-            "key_findings": [
-                "구조화 파싱 실패로 최소 진단 결과로 대체되었습니다.",
-                reason,
-            ],
-            "improvement_points": [
-                "핵심 역량 3~5개를 상단 요약에 명시",
-                "프로젝트를 문제-접근-결과 구조로 재작성",
-                "정량 지표(성능/처리량/품질)를 문장에 포함",
-                "목표 직무 공고 키워드와 일치율을 높이도록 수정",
-            ],
-            "evidence_snippets": [state.get("rag_context", "")[:300] or "RAG 근거 없음"],
+            "key_findings": _as_string_list(
+                ["구조화 파싱 실패로 최소 진단 결과로 대체되었습니다.", normalized_reason],
+                fallback="구조화 파싱 실패로 기본 진단을 제공합니다.",
+            ),
+            "improvement_points": _as_string_list(
+                [
+                    "핵심 역량 3~5개를 상단 요약에 명시",
+                    "프로젝트를 문제-접근-결과 구조로 재작성",
+                    "정량 지표(성능/처리량/품질)를 문장에 포함",
+                    "목표 직무 공고 키워드와 일치율을 높이도록 수정",
+                ],
+                fallback="JD 키워드와 핵심 역량 정합성을 우선 보강",
+            ),
+            "evidence_snippets": _fallback_rag_snippets(state, normalized_reason, max_items=2),
             "evidence_map": {},
         }
 
     def _fallback_interview_notes(state: AgentState, reason: str) -> dict[str, Any]:
+        normalized_reason = _normalize_fallback_reason(reason, ErrorCodes.STRUCTURED_OUTPUT_INTERVIEW_FALLBACK)
         return {
-            "expected_questions": [
-                "해당 직무에서 본인이 가장 잘한 문제 해결 사례는?",
-                "프로젝트에서 성과를 수치로 설명할 수 있는가?",
-                "협업 갈등 상황을 어떻게 해결했는가?",
-                "우선순위 판단 기준은 무엇이었는가?",
-            ],
-            "answer_guides": [
-                "상황-행동-결과 순서로 간결하게 답변",
-                "수치/지표를 포함해 신뢰도를 높임",
-                "본인 기여 범위를 명확히 구분",
-                "회고와 재발 방지 관점까지 포함",
-            ],
-            "avoid_patterns": [
-                "근거 없는 단정형 답변",
-                "팀 성과를 본인 성과처럼 과장",
-                "기술 나열만 하고 문제 맥락 누락",
-                "질문 의도와 무관한 장황한 설명",
-            ],
-            "evidence_snippets": [
-                reason,
-                state.get("rag_context", "")[:300] or "RAG 근거 없음",
-            ],
+            "expected_questions": _as_string_list(
+                [
+                    "해당 직무에서 본인이 가장 잘한 문제 해결 사례는?",
+                    "프로젝트에서 성과를 수치로 설명할 수 있는가?",
+                    "협업 갈등 상황을 어떻게 해결했는가?",
+                    "우선순위 판단 기준은 무엇이었는가?",
+                ],
+                fallback="해당 직무 핵심 역량을 입증할 대표 사례는 무엇인가?",
+            ),
+            "answer_guides": _as_string_list(
+                [
+                    "상황-행동-결과 순서로 간결하게 답변",
+                    "수치/지표를 포함해 신뢰도를 높임",
+                    "본인 기여 범위를 명확히 구분",
+                    "회고와 재발 방지 관점까지 포함",
+                ],
+                fallback="STAR 구조로 답변을 60~90초 내에 정리",
+            ),
+            "avoid_patterns": _as_string_list(
+                [
+                    "근거 없는 단정형 답변",
+                    "팀 성과를 본인 성과처럼 과장",
+                    "기술 나열만 하고 문제 맥락 누락",
+                    "질문 의도와 무관한 장황한 설명",
+                ],
+                fallback="근거/맥락 없이 기술만 나열하는 답변",
+            ),
+            "evidence_snippets": _fallback_rag_snippets(state, normalized_reason, max_items=2),
             "evidence_map": {},
         }
 
     def _fallback_plan_notes(state: AgentState, reason: str) -> dict[str, Any]:
+        normalized_reason = _normalize_fallback_reason(reason, ErrorCodes.STRUCTURED_OUTPUT_PLAN_FALLBACK)
         return {
-            "priorities": [
-                "JD 핵심 역량과 현재 준비 상태의 격차가 큰 항목부터 우선 실행",
-                "이력서/포트폴리오 고도화와 면접 리허설을 병행",
-                "주 단위 산출물(문서/답변 스크립트) 중심으로 관리",
-            ],
-            "weekly_schedule": [
-                "1주차: JD 키워드 정렬, 이력서 핵심 불릿 재작성, 프로젝트 성과 수치 보강",
-                "2주차: 예상 질문 답변 스크립트 완성, 모의 면접 2회, 피드백 반영",
-            ],
-            "validation_checks": [
-                "이력서 항목별로 JD 요구역량 매칭 여부 체크",
-                "모의 면접 후 약점 질문 재학습 여부 확인",
-                "지원 전 체크리스트 완료율 점검",
-            ],
-            "evidence_snippets": [
-                reason,
-                state.get("rag_context", "")[:300] or "RAG 근거 없음",
-            ],
+            "priorities": _as_string_list(
+                [
+                    "JD 핵심 역량과 현재 준비 상태의 격차가 큰 항목부터 우선 실행",
+                    "이력서/포트폴리오 고도화와 면접 리허설을 병행",
+                    "주 단위 산출물(문서/답변 스크립트) 중심으로 관리",
+                ],
+                fallback="JD 요구역량 대비 격차가 큰 항목부터 우선 실행",
+            ),
+            "weekly_schedule": _as_string_list(
+                [
+                    "1주차: JD 키워드 정렬, 이력서 핵심 불릿 재작성, 프로젝트 성과 수치 보강",
+                    "2주차: 예상 질문 답변 스크립트 완성, 모의 면접 2회, 피드백 반영",
+                ],
+                fallback="1~2주차 실행 일정을 우선순위 기반으로 재구성",
+            ),
+            "validation_checks": _as_string_list(
+                [
+                    "이력서 항목별로 JD 요구역량 매칭 여부 체크",
+                    "모의 면접 후 약점 질문 재학습 여부 확인",
+                    "지원 전 체크리스트 완료율 점검",
+                ],
+                fallback="주차별 산출물 완료율과 근거 반영 여부를 점검",
+            ),
+            "evidence_snippets": _fallback_rag_snippets(state, normalized_reason, max_items=2),
             "evidence_map": {},
         }
 

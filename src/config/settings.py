@@ -66,6 +66,7 @@ class Settings:
     rerank_max_per_source: int = 2
     retrieval_max_chunks_per_file: int = 0
     allow_uncategorized_in_filter: bool = True
+    uncategorized_ratio_warn_threshold: float = 0.5
     faiss_allow_dangerous_deserialization: bool = False
     graph_state_cache_enabled: bool = True
     graph_state_cache_bypass_contextual: bool = True
@@ -127,6 +128,7 @@ def load_settings() -> Settings:
     rerank_max_per_source = _int_env("RERANK_MAX_PER_SOURCE", 2)
     retrieval_max_chunks_per_file = _int_env("RETRIEVAL_MAX_CHUNKS_PER_FILE", 0)
     allow_uncategorized_in_filter = _bool_env("ALLOW_UNCATEGORIZED_IN_FILTER", True)
+    uncategorized_ratio_warn_threshold = _float_env("UNCATEGORIZED_RATIO_WARN_THRESHOLD", 0.5)
     faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", False)
     graph_state_cache_enabled = _bool_env(
         "FINAL_ANSWER_CACHE_ENABLED",
@@ -203,6 +205,7 @@ def load_settings() -> Settings:
         rerank_max_per_source=max(1, min(rerank_max_per_source, 5)),
         retrieval_max_chunks_per_file=max(0, min(retrieval_max_chunks_per_file, 10)),
         allow_uncategorized_in_filter=allow_uncategorized_in_filter,
+        uncategorized_ratio_warn_threshold=max(0.0, min(uncategorized_ratio_warn_threshold, 1.0)),
         faiss_allow_dangerous_deserialization=faiss_allow_dangerous_deserialization,
         graph_state_cache_enabled=graph_state_cache_enabled,
         graph_state_cache_bypass_contextual=graph_state_cache_bypass_contextual,

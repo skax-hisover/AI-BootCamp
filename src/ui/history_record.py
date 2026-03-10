@@ -34,6 +34,9 @@ def _summary_response(payload: dict[str, Any]) -> dict[str, Any]:
                 )
     return {
         "summary": str(payload.get("summary", "") or ""),
+        "run_id": str(payload.get("run_id", "") or ""),
+        "executed_at": str(payload.get("executed_at", "") or ""),
+        "result_source": str(payload.get("result_source", "") or ""),
         "route": payload.get("route"),
         "routing_reason": payload.get("routing_reason"),
         "rag_low_confidence": payload.get("rag_low_confidence"),
@@ -71,6 +74,7 @@ def migrate_history_record(item: dict[str, Any]) -> dict[str, Any]:
     normalized["query"] = str(normalized.get("query", "") or "")
     normalized["target_role"] = str(normalized.get("target_role", "백엔드 개발자") or "백엔드 개발자")
     normalized["session_id"] = str(normalized.get("session_id", "") or "")
+    normalized["run_id"] = str(normalized.get("run_id", "") or "")
     normalized["resume_len"] = _to_int(normalized.get("resume_len", 0), default=0)
     normalized["jd_len"] = _to_int(normalized.get("jd_len", 0), default=0)
     normalized["resume_text"] = str(normalized.get("resume_text", "") or "")
@@ -88,12 +92,14 @@ def build_history_record(
     resume_text: str,
     jd_text: str,
     response_payload: dict[str, Any],
+    run_id: str = "",
     storage_mode: str = "summary",
 ) -> dict[str, Any]:
     mode = storage_mode if storage_mode in {"summary", "full"} else "summary"
     base = {
         "record_version": HISTORY_RECORD_VERSION,
         "session_id": session_id,
+        "run_id": str(run_id or ""),
         "query": query.strip(),
         "target_role": target_role,
         "resume_len": len(resume_text or ""),

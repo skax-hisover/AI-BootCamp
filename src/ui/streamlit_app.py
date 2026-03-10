@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import hashlib
 from pathlib import Path
+from datetime import datetime
 from uuid import uuid4
 
 import streamlit as st
@@ -185,6 +186,8 @@ def run() -> None:
         st.session_state.jd_text_input = ""
     if "last_response" not in st.session_state:
         st.session_state.last_response = None
+    if "last_response_origin" not in st.session_state:
+        st.session_state.last_response_origin = ""
     if "max_resume_chars" not in st.session_state:
         st.session_state.max_resume_chars = DEFAULT_MAX_RESUME_CHARS
     if "auto_compress_resume" not in st.session_state:
@@ -234,6 +237,7 @@ def run() -> None:
                     st.caption(
                         f"직무: {item['target_role']} | 세션: {item['session_id']} | "
                         f"이력서 길이: {item['resume_len']}자 | JD 길이: {item.get('jd_len', 0)}자 | "
+                        f"run_id: {item.get('run_id', 'n/a')} | "
                         f"저장모드: {item.get('storage_mode', 'full')} | "
                         f"스키마 v{item.get('record_version', 1)}"
                     )
@@ -244,7 +248,20 @@ def run() -> None:
                         st.session_state.target_role_input = item.get("target_role", "백엔드 개발자")
                         st.session_state.resume_text_input = item.get("resume_text", "")
                         st.session_state.jd_text_input = item.get("jd_text", "")
-                        st.session_state.last_response = item.get("response")
+                        loaded_response = item.get("response") if isinstance(item.get("response"), dict) else {}
+                        loaded_response = dict(loaded_response or {})
+                        loaded_response["run_id"] = str(
+                            loaded_response.get("run_id")
+                            or item.get("run_id")
+                            or f"history-{uuid4().hex[:8]}"
+                        )
+                        loaded_response["result_source"] = "history_load"
+                        loaded_response["executed_at"] = str(
+                            loaded_response.get("executed_at")
+                            or datetime.now().isoformat(timespec="seconds")
+                        )
+                        st.session_state.last_response = loaded_response
+                        st.session_state.last_response_origin = "history_load"
                         st.info("질문/직무/JD/이력서/결과를 복원했습니다.")
                         st.rerun()
                     if col_b.button("삭제", key=f"delete_{real_idx}", use_container_width=True):
@@ -574,13 +591,19 @@ def run() -> None:
             st.error(f"서비스 실행 중 예기치 못한 오류가 발생했습니다: {exc}")
             return
 
+        run_id = datetime.now().strftime("run-%Y%m%d-%H%M%S")
+        response_payload = response.model_dump()
+        response_payload["run_id"] = run_id
+        response_payload["result_source"] = "new_run"
+        response_payload["executed_at"] = datetime.now().isoformat(timespec="seconds")
         record = build_history_record(
             session_id=st.session_state.session_id,
             query=query,
             target_role=target_role,
             resume_text=resume_text_for_run,
             jd_text=jd_text_for_run,
-            response_payload=response.model_dump(),
+            response_payload=response_payload,
+            run_id=run_id,
             storage_mode=st.session_state.history_storage_mode,
         )
         if int(record.get("record_version", 0) or 0) < HISTORY_RECORD_VERSION:
@@ -590,14 +613,20 @@ def run() -> None:
         st.session_state.input_history.append(record)
         if st.session_state.persist_history_enabled:
             _save_persisted_history(st.session_state.input_history)
-        st.session_state.last_response = response.model_dump()
+        st.session_state.last_response = response_payload
+        st.session_state.last_response_origin = "new_run"
         # Rerun to refresh sidebar history immediately after append.
         st.rerun()
 
     if st.session_state.last_response:
         latest = st.session_state.last_response
         route = str(latest.get("route", "")).lower()
-        st.success("분석 완료")
+        run_id = str(latest.get("run_id", "") or "n/a")
+        result_source = str(latest.get("result_source", "") or st.session_state.last_response_origin or "n/a")
+        executed_at = str(latest.get("executed_at", "") or "").strip()
+        source_label = "새 실행 결과" if result_source == "new_run" else "히스토리 불러오기"
+        time_label = f" | 시각: {executed_at}" if executed_at else ""
+        st.success(f"분석 완료 - {source_label} | run_id: {run_id}{time_label}")
         st.subheader("요약")
         st.write(latest["summary"])
 
@@ -674,7 +703,20 @@ def run() -> None:
                 st.write(f"- cached_state_hit: `{latest.get('cached_state_hit', False)}`")
                 node_status = latest.get("node_status")
                 if isinstance(node_status, dict):
-                    st.write(f"- node_status: `{node_status}`")
+                    st.markdown("- node_status:")
+                    for node_name in ("supervisor", "rag", "resume", "interview", "plan", "synthesis"):
+                        item = node_status.get(node_name)
+                        if not isinstance(item, dict):
+                            continue
+                        status = str(item.get("status", "ok")).strip() or "ok"
+                        code = str(item.get("error_code", "") or "").strip()
+                        detail = str(item.get("detail", "") or "").strip()
+                        line = f"  - `{node_name}`: `{status}`"
+                        if code:
+                            line += f", code=`{code}`"
+                        if detail:
+                            line += f", detail={detail}"
+                        st.write(line)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ from src.workflow.engine import (
     _cache_record_payload_for_request,
     _sanitize_evidence_map,
     _upsert_cache_record,
+    derive_node_status,
     enforce_final_answer_policy,
     heuristic_route_from_query,
     normalize_final_answer_by_route,
@@ -122,6 +123,18 @@ def test_heuristic_route_ignores_negated_exclusion_phrase() -> None:
     assert route is None
 
 
+def test_heuristic_route_does_not_force_plan_only_on_negated_plan_exclusion() -> None:
+    route = heuristic_route_from_query("이력서 개선 포인트만 보고 싶고 계획 제외는 아니야.")
+    assert route is not None
+    assert route[0] == "resume_only"
+
+
+def test_heuristic_route_does_not_force_plan_only_on_include_plan_phrase() -> None:
+    route = heuristic_route_from_query("이력서만 먼저 보고, 계획은 제외하지 말고 같이 보자.")
+    assert route is not None
+    assert route[0] == "resume_only"
+
+
 def test_normalize_final_answer_by_route_cleans_none_notice() -> None:
     payload = {
         "summary": "요약",
@@ -158,6 +171,17 @@ def test_enforce_chat_response_contract_normalizes_node_status() -> None:
     )
     assert isinstance(payload["node_status"], dict)
     assert payload["node_status"]["resume"]["status"] == "degraded"
+
+
+def test_derive_node_status_includes_skip_reason_by_route() -> None:
+    state = {
+        "final_answer": {"summary": "요약"},
+    }
+    status = derive_node_status("plan_only", state)
+    assert status["resume"]["status"] == "skipped"
+    assert status["interview"]["status"] == "skipped"
+    assert "route=plan_only" in str(status["resume"]["detail"])
+    assert "plan-focused" in str(status["interview"]["detail"])
 
 
 def test_sanitize_evidence_map_clips_out_of_range_indices() -> None:

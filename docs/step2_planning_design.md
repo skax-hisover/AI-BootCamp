@@ -198,12 +198,27 @@
 
 | 기술 요소 | 실제 적용 위치 | 확인 포인트 |
 |---|---|---|
-| Supervisor 라우팅 | `src/workflow/engine.py` (`supervisor_node`, `route_after_*`) | 의도 분류 후 `resume/interview/plan/synthesis` 조건 분기 |
-| 하이브리드 검색 | `src/retrieval/hybrid.py` (`HybridRetriever.search`) | FAISS + BM25 융합, 점수 정규화, 길이 패널티 |
-| 리랭크/다양성 제어 | `src/retrieval/rerank.py` (`rerank_hits`) | role/category boost + source당 max 청크 제한 |
-| RAG 오케스트레이션 | `src/workflow/engine.py` (`rag_node`) | route-aware filter, no-hit fallback, low-confidence 안전모드 |
-| 실행 기록 요약 저장 | `src/ui/history_record.py` (`build_history_record`) | `summary/full` 저장 모드, `record_version` 기반 역호환 가능한 최소 저장 정책 |
+| Supervisor 라우팅 | `src/workflow/engine.py::supervisor_node`, `src/workflow/engine.py::route_after_supervisor` | 의도 분류 후 `resume/interview/plan/synthesis` 조건 분기 |
+| 하이브리드 검색 | `src/retrieval/hybrid.py::HybridRetriever.search`, `src/retrieval/hybrid.py::HybridRetriever._vector_scores` | FAISS + BM25 융합, 쿼리-독립 점수 스케일 변환, 길이 패널티 |
+| 리랭크/다양성 제어 | `src/retrieval/rerank.py::rerank_hits` | role/category boost + source당 max 청크 제한 |
+| RAG 오케스트레이션 | `src/workflow/engine.py::rag_node`, `src/workflow/engine.py::_category_filter_for_route` | route-aware filter, no-hit fallback, low-confidence 안전모드 |
+| 실행 기록 요약 저장 | `src/ui/history_record.py::build_history_record`, `src/ui/history_record.py::migrate_history_record` | `summary/full` 저장 모드, `record_version` 기반 역호환 가능한 최소 저장 정책 |
 | UI 업로드 파싱 공통화 | `src/utils/file_extract.py`, `src/ui/streamlit_app.py`, `src/retrieval/documents.py` | UI/RAG가 동일 파서를 공유해 포맷별 예외 처리 단일화 |
+
+### **2.7 차별성 검증 데이터셋 확장 가이드**
+
+- **직무 분포 가이드(backend/data/pm)**
+  - 기본 원칙: 각 직무별 최소 8~10건 이상을 유지하고, 라우트(`resume_only/interview_only/plan_only/full`)가 한 직무에 치우치지 않도록 균형 배치
+  - 권장 시작점(현재): `data/eval/sample_queries.json` 25건을 seed로 사용하고, 직무별/라우트별 2~3건씩 증분 추가
+
+- **모호 질의 라벨링 기준(`expected_route` 공란)**
+  - `expected_route=""`는 다의적 의도(예: "이직 준비 도와줘", "핵심만 정리해줘")에만 사용
+  - 명시적 제외/전용 키워드(예: "면접 제외", "계획만")가 있으면 반드시 고정 라벨 부여
+  - 모호 질의는 라우팅 정확도 분모에서 제외하고, 경계조건/회복탄력성 관측용으로만 사용
+
+- **재현성 체크 규칙(배치 평가 연동)**
+  - `scripts/evaluate_differentiation_metrics.py`에서 케이스 분포(`resume_only/interview_only/plan_only/full/ambiguous`)를 함께 출력
+  - `--min-per-labeled-route`, `--min-ambiguous-cases` 임계치를 CI에 고정해 분포 편향이 생기면 fail-fast로 차단
 
 **3. 주요 기능 및 동작 시나리오**
 

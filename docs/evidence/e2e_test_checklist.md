@@ -118,6 +118,15 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "a
   - [ ] (선택) `지식 문서 로드 실패 요약` 버튼 클릭 시 인덱싱 실패 파일 목록/오류가 표시되는지 확인
   - [ ] (선택) 기록 저장 OFF/PII 마스킹 옵션 동작 확인
 
+#### 3-2-1. 기록 저장 모드/마스킹 조합 정책(점검표)
+
+| 저장 모드 | PII 마스킹 | 저장되는 입력 필드 | 저장되는 응답 필드 |
+|---|---|---|---|
+| `summary` | OFF | `resume_text`/`jd_text` 원문 미저장, `resume_len/jd_len`, `resume_hash/jd_hash`, `resume_preview/jd_preview`, `run_id` 저장 | 요약 응답(`summary`, route 메타, 상위 항목, compact refs) 저장 |
+| `summary` | ON | 위 `summary` 저장 필드 동일 + 저장 직전 이메일/전화번호 마스킹 적용 | 위 `summary` 응답 필드 동일 + 문자열 필드 마스킹 적용 |
+| `full` | OFF | `resume_text`/`jd_text` 원문 + 길이/해시 + `run_id` 저장 | 응답 원문(`response`) 전체 저장 |
+| `full` | ON | 위 `full` 저장 필드 동일 + 저장 직전 이메일/전화번호 마스킹 적용 | 위 `full` 응답 필드 동일 + 문자열 필드 마스킹 적용 |
+
 ### 3-3. 재시작 후 기록 유지 확인
 
 - [ ] Streamlit 종료(`Ctrl+C`) 후 재실행

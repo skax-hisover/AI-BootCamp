@@ -74,6 +74,7 @@ pip install -r requirements-final.txt
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 2 / top-k 내 동일 source 문서 최대 청크 수)
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 0 / retrieval 단계 source당 청크 상한, 0이면 비활성)
 - `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 true / route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 false로 점진적 tighten 가능)
+- `UNCATEGORIZED_RATIO_WARN_THRESHOLD` (선택, 기본 0.5 / `uncategorized_ratio >= threshold`일 때 카테고리 품질 경고)
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 false / 로컬 개발에서만 필요 시 true opt-in)
 - `FINAL_ANSWER_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off, 레거시 `GRAPH_STATE_CACHE_ENABLED` 호환)
 - `FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회, 레거시 `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 호환)
@@ -115,6 +116,9 @@ python scripts/run_streamlit.py
   ```powershell
   python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
   ```
+
+- 리랭크 다양성 비교는 `--compare-rerank-on-off`로 실행하며, 동일 케이스를 `RERANK_ENABLED=true/false`로 각각 돌려 duplicate-source 비율 차이를 확인합니다.
+- 임계치 검증이 필요하면 `--min-rerank-diversity-gain 0.01`을 함께 사용해 `off-on` 개선량이 기준 미달일 때 즉시 실패 처리합니다.
   - 현재 샘플 구성은 총 25건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 5, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
   - 샘플 질의셋의 `expected_route`가 있을 경우 Top-1 라우팅 정확도를 계산
   - `references >= 1` 비율, `two_week_plan >= 4` 비율을 함께 계산
@@ -151,6 +155,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - FastAPI `/chat` 예외 처리 강화: `ValueError -> 400`, 기타 예외 -> `500`
 - 실행/운영 문서 업데이트: README Troubleshooting 섹션 추가
 - Streamlit UI 업데이트: 세션 ID 자동 관리, 새 대화 시작, 실행 입력 기록의 다시 불러오기(질문/직무/이력서/결과 복원)
+- 실행 출처 UX 명확화: 결과 payload에 `run_id/result_source/executed_at`를 포함하고, 화면 상단에 "새 실행 vs 히스토리 복원" 상태를 명시해 갱신 출처 혼동을 완화
 - 에러 처리 표준화: `JobPilotError` 기반 `error_code/detail` 계약으로 API/CLI/UI 분기 로직 일원화
 - 인덱스 빌드 UX 보강: Streamlit에 "인덱스 사전 빌드/로드" 관리 버튼 및 첫 실행 지연 안내 추가
 - 개인정보 옵션 보강: 실행 입력 기록 파일 저장 on/off, 저장 전 이메일/전화번호 마스킹 옵션 추가
@@ -158,6 +163,8 @@ python scripts/validate_knowledge_metadata.py --strict
 - Supervisor 라우팅 고도화: `resume_only/interview_only/full/plan_only` 분류 + LangGraph 조건부 엣지 분기 적용
 - Supervisor 2단 라우팅: "면접 제외/계획 제외/이력서 제외" 등 명시 표현은 1차 휴리스틱으로 우선 반영하고, 그 외는 LLM 라우팅으로 처리
 - 라우팅 정의 상수화: 휴리스틱 키워드/제외어/LLM 라우팅 규칙 블록을 공통 상수(`src/workflow/prompts.py`)로 분리해 휴리스틱/LLM 라우터가 동일 정의 집합을 공유
+- 라우팅 부정문 내성 보강: `~제외는 아니고`, `~제외하지 말고` 패턴을 휴리스틱 예외 규칙으로 추가해 `resume_only` 질의의 `plan_only` 오분류를 완화
+- 회귀 테스트 고정: 부정/예외 문맥 케이스를 `tests/test_workflow_routes.py`에 추가해 라우팅 안정성을 테스트로 재현 가능하게 관리
 - Tool loop 가드레일 강화: 최대 N회(기본 4회) 루프 + 동일 tool+args 반복 호출 감지 시 중단 + 도구 라운드 상한 후 강제 요약 전환
 - Tool 출력 구조화: `resume_keyword_match_score`/`interview_question_bank` 결과를 JSON으로 표준화하고, Agent 프롬프트에서 1회 이상 반영 규칙을 명시
 - Plan Agent 분리: `plan_node` 추가, `full/plan_only`에서 실행해 우선순위/일정/검증 방법을 독립적으로 의사결정
@@ -174,6 +181,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 에이전트 로컬 정책 강화: 이력서 텍스트 미제공 시 Resume/Interview 노드가 갭 분석/공통 질문 중심으로 독립 전환
 - 노드 독립성 강화: Resume/Interview/Plan/Supervisor/RAG 노드별 모델 온도와 시스템 역할 지시를 분리해 의사결정 편향을 완화
 - 오류 내성 강화: Resume/Interview/Synthesis structured output 실패 시 fallback 결과로 degrade 처리
+- Specialist fallback 타입 보장 강화: `_fallback_resume_notes/_fallback_interview_notes/_fallback_plan_notes`에서 리스트 필드·근거 스니펫·reason 포맷(`ErrorCodes`)을 정규화해 계약 일관성 보강
 - route-aware 출력 규칙: `synthesis` 단계에서 라우트별 최소 섹션 규칙 적용(예: `plan_only`는 계획 중심, 불필요 섹션은 빈 배열)
 - 라우트 최소 개수 정렬: `resume_only/interview_only`는 `two_week_plan` 최소 개수를 0으로 조정해 기획 시나리오(플랜 제외)와 일치
 - Synthesis 안정화: 규칙을 필수/권장으로 분리하고, 최소 개수/빈 배열/citation 보정은 코드 후처리에서 강제
@@ -236,3 +244,16 @@ python scripts/validate_knowledge_metadata.py --strict
 - 루트 문서 카테고리 보정: `data/knowledge` 루트 파일은 파일명 규칙으로 카테고리를 자동 추론해 `uncategorized` 과다를 완화
 - references 계약 구조화: `ChatResponse.references`를 `{rank, source, chunk_id, location, score, category, snippet}` 객체 리스트로 통일해 UI/후처리 활용성을 개선
 - 지표 증빙 인코딩 안정화: `evaluate_differentiation_metrics.py --output` 옵션으로 UTF-8 저장을 명시 지원해 `metrics_run_output.txt` 깨짐 문제를 예방
+
+## 7) 체크포인터/캐시 책임 경계 및 마이그레이션
+
+```mermaid
+flowchart LR
+    A[MemorySaver<br/>LangGraph runtime checkpointer] -->|프로세스 내 실행 중 복원| G[Graph Execution]
+    B[session_memory.json] -->|재시작 이후 대화 이력 복원| G
+    C[final_answer_cache.json] -->|재시작 이후 동일 요청 최종 응답 재사용| G
+    D[graph_state_cache.json<br/>(legacy)] -->|일회성 마이그레이션| C
+```
+
+- 책임 경계: `MemorySaver`는 **프로세스 내(runtime) 그래프 상태 복원** 전용, `session_memory.json/final_answer_cache.json`은 **재시작 이후 복원/재사용** 전용입니다.
+- 레거시 제거 플랜: `scripts/migrate_cache.py`로 `graph_state_cache.json -> final_answer_cache.json`를 일괄 이관하고, 이관 완료 후 `--strict` 기준으로 레거시 파일 잔존을 운영 점검 항목으로 관리합니다.

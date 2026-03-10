@@ -23,10 +23,12 @@ def test_build_history_record_summary_mode_minimizes_payload() -> None:
         resume_text="resume text",
         jd_text="jd text",
         response_payload=_sample_response(),
+        run_id="run-1",
         storage_mode="summary",
     )
     assert record["storage_mode"] == "summary"
     assert record["record_version"] == 1
+    assert record["run_id"] == "run-1"
     assert record["resume_text"] == ""
     assert record["jd_text"] == ""
     assert record["resume_hash"]
@@ -43,10 +45,12 @@ def test_build_history_record_full_mode_keeps_raw_text() -> None:
         resume_text="resume text",
         jd_text="jd text",
         response_payload=_sample_response(),
+        run_id="run-2",
         storage_mode="full",
     )
     assert record["storage_mode"] == "full"
     assert record["record_version"] == 1
+    assert record["run_id"] == "run-2"
     assert record["resume_text"] == "resume text"
     assert record["jd_text"] == "jd text"
     assert record["response"]["summary"] == "요약"
@@ -67,5 +71,6 @@ def test_migrate_history_record_v0_to_v1() -> None:
     assert migrated["resume_len"] == 11
     assert migrated["jd_len"] == 7
     assert migrated["storage_mode"] == "summary"
+    assert migrated["run_id"] == ""
     assert isinstance(migrated["response"], dict)
 

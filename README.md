@@ -46,6 +46,9 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **체크포인터 역할 분리**: `MemorySaver`는 프로세스 내 런타임 복원용, 재시작 이후 영속 복원은 `session_memory.json`/`final_answer_cache.json`이 담당
 - **메모리 정책 단일화**: `session_memory.json`은 대화 턴만 저장하고, 큰 입력/노드 상태는 저장하지 않으며 그래프 결과 재사용은 `final_answer_cache.json`으로 분리
 - **라우팅 안정화**: Supervisor에서 "제외/전용" 키워드 1차 휴리스틱 라우팅 후, 미해당 케이스만 LLM 라우팅으로 처리
+- **부정/예외 라우팅 보강**: `~제외는 아니고`, `~제외하지 말고` 같은 부정 문맥을 휴리스틱에서 탐지해 `plan_only` 오분류를 줄이고 LLM 재판단으로 위임
+- **라우팅 키워드 운영성**: `RESUME_ONLY_MARKERS`/`PLAN_ONLY_MARKERS`와 제외·부정 패턴을 `src/workflow/prompts.py` 상수로 관리해 테스트/튜닝 시 변경 지점을 단일화
+- **Specialist fallback 타입 보장**: Resume/Interview/Plan fallback 출력에서 리스트 필드/근거 스니펫을 정규화하고 `ErrorCodes` 기반 reason 포맷을 통일해 UI/평가 파싱 안정성 강화
 - **최종 응답 재사용 캐시**: 파일 기반 invoke 캐시(`final_answer_cache.json` + lock)는 정규화된 최종 `ChatResponse` payload를 재사용(그래프 중간 상태 전체 저장은 아님)
 - **JD-이력서 갭 도구**: `jd_resume_gap_score`(필수/우대 키워드 매칭률 + 누락 Top-N) 추가 및 Resume Agent tool loop 연동
 - **선택형 신뢰도 메타데이터**: `ChatResponse`에 `route/routing_reason/rag_low_confidence/cached_state_hit/node_status` 포함, Streamlit 디버그 토글로 표시 가능
@@ -133,6 +136,7 @@ Copy-Item .env.example .env
 - `RERANK_MAX_PER_SOURCE` (선택, 기본 `2`; top-k 내 동일 source 문서 최대 청크 수)
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 `0`; retrieval 단계 source당 청크 상한, `0`은 비활성)
 - `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 `true`; route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 `false`로 점진적 tighten 가능)
+- `UNCATEGORIZED_RATIO_WARN_THRESHOLD` (선택, 기본 `0.5`; 카테고리 품질 경고 임계치, `uncategorized_ratio >= threshold`일 때 경고)
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `false`; 로컬 개발에서만 필요 시 `true`로 opt-in 권장)
 - `FINAL_ANSWER_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off, 레거시 `GRAPH_STATE_CACHE_ENABLED`도 호환)
 - `FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회, 레거시 `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL`도 호환)
@@ -200,6 +204,15 @@ python scripts/run_api.py
 
 - Health: `http://127.0.0.1:8000/health`
 - Chat endpoint: `POST http://127.0.0.1:8000/chat`
+- OpenAPI docs: `http://127.0.0.1:8000/docs`
+
+```json
+{"session_id":"api-demo-1","user_query":"JD 대비 이력서 갭을 분석해줘.","target_role":"백엔드 개발자","jd_text":"Python/FastAPI, DB 튜닝","resume_text":"FastAPI 개발 경험"}
+```
+
+```json
+{"session_id":"api-demo-1","summary":"요약 ...","resume_improvements":["..."],"interview_preparation":["..."],"two_week_plan":["..."],"references":[{"rank":1,"source":"doc.md","score":0.82}],"route":"full","node_status":{"resume":{"status":"ok","error_code":null,"detail":null}}}
+```
 
 ### 3) Streamlit
 
@@ -247,12 +260,17 @@ python scripts/run_streamlit.py
 - 체크포인터 복원 범위가 헷갈릴 때
   - `MemorySaver`: 같은 프로세스에서의 그래프 상태 복원(런타임)
   - `final_answer_cache.json`/`session_memory.json`: 프로세스 재시작 이후 재사용(영속)
+  - 레거시 캐시 이관: `python scripts/migrate_cache.py --index-dir data/index`
+  - 이관 검증(엄격 모드): `python scripts/migrate_cache.py --index-dir data/index --strict`
 
 ## 차별성 지표 자동화
 
 ```powershell
 python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json --output docs/evidence/metrics_run_output.txt
 ```
+
+- 리랭크 다양성 비교가 필요하면 `--compare-rerank-on-off`를 사용해 동일 케이스를 `RERANK_ENABLED=true/false`로 각각 실행하고 duplicate-source 비율을 비교합니다.
+- 최소 개선폭 기준을 강제하려면 `--min-rerank-diversity-gain 0.01`처럼 설정해 `off-on` 개선량이 임계치 미만일 때 fail-fast로 처리합니다.
 
 - 지표: 라우팅 정확도(`expected_route`가 있을 때), 근거 포함률, 플랜 품질률
 - 샘플 구성: 총 25건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 5, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증

@@ -216,7 +216,7 @@ def _normalize_weights(vector_weight: float, bm25_weight: float) -> tuple[float,
     return vw / total, bw / total
 
 
-def _category_diagnostics(chunks: list[Document]) -> dict[str, Any]:
+def _category_diagnostics(chunks: list[Document], uncategorized_warn_threshold: float = 0.5) -> dict[str, Any]:
     required_categories = {"job_postings", "jd", "interview_guides", "portfolio_examples"}
     distribution: dict[str, int] = {}
     for chunk in chunks:
@@ -228,9 +228,10 @@ def _category_diagnostics(chunks: list[Document]) -> dict[str, Any]:
     uncategorized_ratio = round((uncategorized_count / total), 4) if total else 0.0
     present_required = sorted([category for category in required_categories if category in distribution])
     missing_required = sorted(required_categories - set(distribution.keys()))
+    threshold = max(0.0, min(float(uncategorized_warn_threshold), 1.0))
     warning = (
         "uncategorized_ratio_high"
-        if uncategorized_ratio >= 0.5
+        if uncategorized_ratio >= threshold
         else ("missing_required_categories" if missing_required else "")
     )
     return {
@@ -238,6 +239,7 @@ def _category_diagnostics(chunks: list[Document]) -> dict[str, Any]:
         "uncategorized_ratio": uncategorized_ratio,
         "present_required_categories": present_required,
         "missing_required_categories": missing_required,
+        "uncategorized_warn_threshold": threshold,
         "category_quality_warning": warning or None,
     }
 
@@ -322,7 +324,10 @@ class HybridRetriever:
         if chunks is not None and vector_db is not None:
             tokenized_chunks = [_tokenize(doc.page_content) for doc in chunks]
             bm25 = BM25Okapi(tokenized_chunks)
-            diagnostics = _category_diagnostics(chunks)
+            diagnostics = _category_diagnostics(
+                chunks,
+                uncategorized_warn_threshold=settings.uncategorized_ratio_warn_threshold,
+            )
             if diagnostics.get("category_quality_warning"):
                 print(
                     "[WARN] Knowledge category quality issue:",
@@ -363,7 +368,10 @@ class HybridRetriever:
             json.dumps(chunks_payload, ensure_ascii=False),
             encoding="utf-8",
         )
-        diagnostics = _category_diagnostics(chunks)
+        diagnostics = _category_diagnostics(
+            chunks,
+            uncategorized_warn_threshold=settings.uncategorized_ratio_warn_threshold,
+        )
         if diagnostics.get("category_quality_warning"):
             print(
                 "[WARN] Knowledge category quality issue:",

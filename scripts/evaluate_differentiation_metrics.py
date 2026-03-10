@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -16,9 +17,11 @@ from src.evaluation.metrics import (  # noqa: E402
     AnswerQualitySample,
     RoutingSampleResult,
     plan_quality_rate,
+    reference_source_duplication_rate,
     reference_inclusion_rate,
     routing_accuracy,
 )
+from src.config.settings import load_settings  # noqa: E402
 from src.workflow import JobPilotService  # noqa: E402
 
 
@@ -49,6 +52,17 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="",
         help="Optional output file path. When set, writes the full report with UTF-8 encoding.",
+    )
+    parser.add_argument(
+        "--compare-rerank-on-off",
+        action="store_true",
+        help="Run the same cases with RERANK_ENABLED=true/false and report source-duplication delta.",
+    )
+    parser.add_argument(
+        "--min-rerank-diversity-gain",
+        type=float,
+        default=0.0,
+        help="Minimum required gain where gain=(dup_ratio_off - dup_ratio_on).",
     )
     return parser.parse_args()
 
@@ -119,70 +133,108 @@ def _confusion_matrix(samples: list[RoutingSampleResult]) -> tuple[list[str], di
     return labels, matrix
 
 
+def _run_once(
+    *,
+    cases: list[dict],
+    session_prefix: str,
+    rerank_enabled_override: bool | None = None,
+) -> dict[str, object]:
+    original_rerank_env = os.environ.get("RERANK_ENABLED")
+    try:
+        if rerank_enabled_override is None:
+            if "RERANK_ENABLED" in os.environ:
+                del os.environ["RERANK_ENABLED"]
+        else:
+            os.environ["RERANK_ENABLED"] = "true" if rerank_enabled_override else "false"
+        load_settings.cache_clear()
+
+        service = JobPilotService()
+        routing_samples: list[RoutingSampleResult] = []
+        reference_samples: list[AnswerQualitySample] = []
+        plan_quality_samples: list[AnswerQualitySample] = []
+        details: list[dict[str, object]] = []
+        for i, case in enumerate(cases, start=1):
+            session_id = f"{session_prefix}-{i}"
+            state = {
+                "session_id": session_id,
+                "user_query": str(case.get("query", "")),
+                "target_role": str(case.get("target_role", "백엔드 개발자")),
+                "resume_text": str(case.get("resume_text", "")),
+                "jd_text": str(case.get("jd_text", "")),
+            }
+            result = service.graph.invoke(
+                state,
+                config={"configurable": {"thread_id": session_id}},
+            )
+            final_answer = result.get("final_answer", {}) if isinstance(result, dict) else {}
+            refs = final_answer.get("references", []) if isinstance(final_answer, dict) else []
+            plans = final_answer.get("two_week_plan", []) if isinstance(final_answer, dict) else []
+            references = refs if isinstance(refs, list) else []
+            two_week_plan = plans if isinstance(plans, list) else []
+
+            predicted_route = str(result.get("route", "unknown"))
+            expected_route = str(case.get("expected_route", ""))
+            eval_route = (expected_route or predicted_route).strip().lower()
+            if expected_route:
+                routing_samples.append(
+                    RoutingSampleResult(
+                        expected_route=_normalized_route(expected_route),
+                        predicted_route=_normalized_route(predicted_route),
+                    )
+                )
+            sample = AnswerQualitySample(
+                references=references,
+                two_week_plan=[str(item) for item in two_week_plan],
+            )
+            reference_samples.append(sample)
+            if _requires_plan(eval_route):
+                plan_quality_samples.append(sample)
+            details.append(
+                {
+                    "query": state["user_query"],
+                    "expected_route": expected_route,
+                    "predicted_route": predicted_route,
+                    "eval_route": eval_route,
+                    "references_count": len(references),
+                    "plan_items_count": len(two_week_plan),
+                }
+            )
+        routing = routing_accuracy(routing_samples) if routing_samples else 0.0
+        ref_rate = reference_inclusion_rate(reference_samples)
+        plan_rate = plan_quality_rate(plan_quality_samples)
+        dup_rate = reference_source_duplication_rate(reference_samples)
+        return {
+            "routing_samples": routing_samples,
+            "reference_samples": reference_samples,
+            "routing": routing,
+            "ref_rate": ref_rate,
+            "plan_rate": plan_rate,
+            "dup_rate": dup_rate,
+            "details": details,
+        }
+    finally:
+        if original_rerank_env is None:
+            os.environ.pop("RERANK_ENABLED", None)
+        else:
+            os.environ["RERANK_ENABLED"] = original_rerank_env
+        load_settings.cache_clear()
+
+
 def main() -> None:
     args = parse_args()
     cases_path = Path(args.cases)
     if not cases_path.exists():
         raise FileNotFoundError(f"Cases file not found: {cases_path}")
 
-    service = JobPilotService()
     cases = _load_cases(cases_path)
     case_counter = _case_distribution(cases)
-    routing_samples: list[RoutingSampleResult] = []
-    reference_samples: list[AnswerQualitySample] = []
-    plan_quality_samples: list[AnswerQualitySample] = []
-
-    details: list[dict] = []
-    for i, case in enumerate(cases, start=1):
-        session_id = f"{args.session_prefix}-{i}"
-        state = {
-            "session_id": session_id,
-            "user_query": str(case.get("query", "")),
-            "target_role": str(case.get("target_role", "백엔드 개발자")),
-            "resume_text": str(case.get("resume_text", "")),
-            "jd_text": str(case.get("jd_text", "")),
-        }
-        result = service.graph.invoke(
-            state,
-            config={"configurable": {"thread_id": session_id}},
-        )
-        final_answer = result.get("final_answer", {}) if isinstance(result, dict) else {}
-        refs = final_answer.get("references", []) if isinstance(final_answer, dict) else []
-        plans = final_answer.get("two_week_plan", []) if isinstance(final_answer, dict) else []
-        references = refs if isinstance(refs, list) else []
-        two_week_plan = plans if isinstance(plans, list) else []
-
-        predicted_route = str(result.get("route", "unknown"))
-        expected_route = str(case.get("expected_route", ""))
-        eval_route = (expected_route or predicted_route).strip().lower()
-        if expected_route:
-            routing_samples.append(
-                RoutingSampleResult(
-                    expected_route=_normalized_route(expected_route),
-                    predicted_route=_normalized_route(predicted_route),
-                )
-            )
-        sample = AnswerQualitySample(
-            references=[str(item) for item in references],
-            two_week_plan=[str(item) for item in two_week_plan],
-        )
-        reference_samples.append(sample)
-        if _requires_plan(eval_route):
-            plan_quality_samples.append(sample)
-        details.append(
-            {
-                "query": state["user_query"],
-                "expected_route": expected_route,
-                "predicted_route": predicted_route,
-                "eval_route": eval_route,
-                "references_count": len(references),
-                "plan_items_count": len(two_week_plan),
-            }
-        )
-
-    routing = routing_accuracy(routing_samples) if routing_samples else 0.0
-    ref_rate = reference_inclusion_rate(reference_samples)
-    plan_rate = plan_quality_rate(plan_quality_samples)
+    baseline = _run_once(cases=cases, session_prefix=args.session_prefix)
+    routing_samples = baseline["routing_samples"]
+    routing = float(baseline["routing"])
+    ref_rate = float(baseline["ref_rate"])
+    plan_rate = float(baseline["plan_rate"])
+    dup_rate = float(baseline["dup_rate"])
+    details = baseline["details"]
 
     report_lines: list[str] = []
     report_lines.append("=== Differentiation Metrics ===")
@@ -201,6 +253,7 @@ def main() -> None:
         report_lines.append("Routing accuracy: n/a (expected_route not provided)")
     report_lines.append(f"Reference inclusion rate: {ref_rate:.2%}")
     report_lines.append(f"Plan quality rate (full/plan_only): {plan_rate:.2%}")
+    report_lines.append(f"Reference duplicate-source ratio: {dup_rate:.2%}")
     if routing_samples:
         labels, matrix = _confusion_matrix(routing_samples)
         expected_labels = sorted({_normalized_route(item.expected_route) for item in routing_samples})
@@ -228,6 +281,27 @@ def main() -> None:
     for item in details:
         report_lines.append(json.dumps(item, ensure_ascii=False))
 
+    rerank_gain = 0.0
+    if args.compare_rerank_on_off:
+        rerank_on = _run_once(
+            cases=cases,
+            session_prefix=f"{args.session_prefix}-rerank-on",
+            rerank_enabled_override=True,
+        )
+        rerank_off = _run_once(
+            cases=cases,
+            session_prefix=f"{args.session_prefix}-rerank-off",
+            rerank_enabled_override=False,
+        )
+        dup_on = float(rerank_on["dup_rate"])
+        dup_off = float(rerank_off["dup_rate"])
+        rerank_gain = dup_off - dup_on
+        report_lines.append("")
+        report_lines.append("=== Rerank On/Off Diversity Comparison ===")
+        report_lines.append(f"duplicate-source ratio (rerank=on): {dup_on:.2%}")
+        report_lines.append(f"duplicate-source ratio (rerank=off): {dup_off:.2%}")
+        report_lines.append(f"diversity gain (off-on): {rerank_gain:.2%}")
+
     distribution_failures = _validate_case_distribution(
         case_counter,
         min_per_labeled_route=max(1, args.min_per_labeled_route),
@@ -250,6 +324,12 @@ def main() -> None:
         raise SystemExit(report_lines[-1])
     if plan_rate < args.min_plan_quality_rate:
         report_lines.append(f"[FAIL] plan quality rate {plan_rate:.2%} < {args.min_plan_quality_rate:.2%}")
+        _emit_report(report_lines, args.output)
+        raise SystemExit(report_lines[-1])
+    if args.compare_rerank_on_off and rerank_gain < args.min_rerank_diversity_gain:
+        report_lines.append(
+            f"[FAIL] rerank diversity gain {rerank_gain:.2%} < {args.min_rerank_diversity_gain:.2%}"
+        )
         _emit_report(report_lines, args.output)
         raise SystemExit(report_lines[-1])
 
