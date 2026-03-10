@@ -278,27 +278,29 @@ sequenceDiagram
     participant Syn as Synthesis
 
     User->>UI: 질문/문서 업로드
-    UI->>Sup: 요청 전달
-    Sup->>Rag: route 결정 후 RAG 검색 실행
-    Rag-->>Sup: RAG context/references + route 유지
+    UI->>Sup: 요청 전달 (사용자 의도 분류 시작)
+    Sup->>Rag: route 결정 후 RAG 검색 실행 (필요 근거 수집 단계)
+    Rag-->>Sup: RAG context/references + route 유지 (근거 요약과 출처 반환)
     alt route=full
-        Rag->>Res: resume_notes 생성
-        Res->>Int: interview_notes 생성
-        Int->>Plan: plan_notes 생성
-        Plan->>Syn: specialist 결과 전달
+        Rag->>Res: resume_notes 생성 (이력서 개선안 도출)
+        Res->>Int: interview_notes 생성 (면접 대비 포인트 도출)
+        Int->>Plan: plan_notes 생성 (2주 실행 계획 도출)
+        Plan->>Syn: specialist 결과 전달 (최종 합성 입력)
     else route=resume_only
-        Rag->>Res: resume_notes 생성
+        Rag->>Res: resume_notes 생성 (이력서 개선만 수행)
         Res->>Syn: specialist 결과 전달
     else route=interview_only
-        Rag->>Int: interview_notes 생성
+        Rag->>Int: interview_notes 생성 (면접 대비만 수행)
         Int->>Syn: specialist 결과 전달
     else route=plan_only
-        Rag->>Plan: plan_notes 생성
+        Rag->>Plan: plan_notes 생성 (실행 계획만 수행)
         Plan->>Syn: specialist 결과 전달
     end
-    Syn-->>UI: 통합 결과(JSON, node_status 포함)
+    Syn-->>UI: 통합 결과(JSON, node_status 포함) 반환
     UI-->>User: 카드형 결과/체크리스트 출력
 ```
+
+- 비기술자 관점 요약: **요청 분류 -> 근거 찾기 -> 필요한 분석만 실행 -> 한 화면으로 합쳐서 보여주기** 순서로 동작합니다.
 
 > Preview에서 Mermaid가 보이지 않을 경우를 대비해, 아래 이미지 버전을 함께 첨부합니다.
 >
