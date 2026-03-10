@@ -244,13 +244,15 @@ flowchart TD
     G1 --> R1[Resume Agent]
     G1 --> I1[Interview Agent]
     G1 --> P1[Plan Agent]
+    G1 --> SY[Synthesis]
+    R1 --> I1
+    R1 --> SY
+    I1 --> P1
+    I1 --> SY
+    P1 --> SY
     G1 --> V[(FAISS Vector DB)]
     G1 --> B[(BM25 Index)]
-    R1 --> S
-    I1 --> S
-    P1 --> S
-    G1 --> S
-    S --> O["Structured Response - JSON"]
+    SY --> O["Structured Response - JSON"]
     O --> U
 ```
 
@@ -273,18 +275,28 @@ sequenceDiagram
     participant Res as Resume Agent
     participant Int as Interview Agent
     participant Plan as Plan Agent
+    participant Syn as Synthesis
 
     User->>UI: 질문/문서 업로드
     UI->>Sup: 요청 전달
-    Sup->>Rag: 관련 지식 검색 요청
-    Rag-->>Sup: 근거 문서/요약 반환
-    Sup->>Res: 이력서 개선안 생성 요청
-    Sup->>Int: 면접 질문/답변 생성 요청
-    Sup->>Plan: 우선순위/일정 계획 생성 요청
-    Res-->>Sup: 개선안 반환
-    Int-->>Sup: 면접 코칭 반환
-    Plan-->>Sup: 2주 실행 계획/검증 체크 반환
-    Sup-->>UI: 통합 결과(JSON)
+    Sup->>Rag: route 결정 후 RAG 검색 실행
+    Rag-->>Sup: RAG context/references + route 유지
+    alt route=full
+        Rag->>Res: resume_notes 생성
+        Res->>Int: interview_notes 생성
+        Int->>Plan: plan_notes 생성
+        Plan->>Syn: specialist 결과 전달
+    else route=resume_only
+        Rag->>Res: resume_notes 생성
+        Res->>Syn: specialist 결과 전달
+    else route=interview_only
+        Rag->>Int: interview_notes 생성
+        Int->>Syn: specialist 결과 전달
+    else route=plan_only
+        Rag->>Plan: plan_notes 생성
+        Plan->>Syn: specialist 결과 전달
+    end
+    Syn-->>UI: 통합 결과(JSON, node_status 포함)
     UI-->>User: 카드형 결과/체크리스트 출력
 ```
 
