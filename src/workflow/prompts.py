@@ -5,6 +5,9 @@ from __future__ import annotations
 PROMPT_RULE_KOREAN_ONLY = "중요: 답변은 반드시 한국어로만 작성하세요."
 PROMPT_RULE_NO_COT = "중요: 생각 과정을 노출하지 말고 결과만 제시하세요."
 PROMPT_RULE_PLAN_CITATION = "중요: 근거 번호 citation([1][2])을 계획 항목 끝에 표기하세요."
+PROMPT_RULE_NO_GUARANTEE = (
+    "중요: 합격 확률/결과를 보장하거나 단정하지 말고, 조건부 표현과 근거 기반 코칭으로 작성하세요."
+)
 
 PROMPT_RULE_RESULT_ONLY = "생각 과정을 노출하지 말고 결과만 작성하세요."
 PROMPT_RULE_ALL_FIELDS_KOREAN = "모든 필드는 한국어로 작성하세요."
@@ -68,7 +71,7 @@ SUPERVISOR_ROUTING_RULE_LINES = (
 
 
 def build_common_policy_block(*, include_plan_citation: bool = False) -> str:
-    lines = [PROMPT_RULE_KOREAN_ONLY, PROMPT_RULE_NO_COT]
+    lines = [PROMPT_RULE_KOREAN_ONLY, PROMPT_RULE_NO_COT, PROMPT_RULE_NO_GUARANTEE]
     if include_plan_citation:
         lines.append(PROMPT_RULE_PLAN_CITATION)
     return "\n".join(lines)

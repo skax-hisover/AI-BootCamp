@@ -12,9 +12,10 @@ from filelock import FileLock
 
 from src.common import JobPilotError
 from src.config import load_settings
-from src.ui.history_record import HISTORY_RECORD_VERSION, build_history_record
+from src.ui.history_record import HISTORY_RECORD_VERSION, build_history_record, migrate_history_record
 from src.ui.input_merge import merge_uploaded_text
 from src.utils.file_extract import extract_text_from_upload
+from src.utils.io import atomic_write_text
 from src.utils.pii import mask_pii_payload
 from src.workflow import ChatRequest, JobPilotService
 
@@ -74,29 +75,7 @@ def _load_persisted_history() -> list[dict]:
 
 
 def _normalize_history_item(item: dict) -> dict:
-    normalized = dict(item)
-    try:
-        version = int(item.get("record_version", 0) or 0)
-    except (TypeError, ValueError):
-        version = 1
-    normalized["record_version"] = version or 1
-    normalized["storage_mode"] = (
-        str(item.get("storage_mode", "full"))
-        if str(item.get("storage_mode", "full")) in {"summary", "full"}
-        else "full"
-    )
-    normalized["query"] = str(item.get("query", "") or "")
-    normalized["target_role"] = str(item.get("target_role", "백엔드 개발자") or "백엔드 개발자")
-    normalized["session_id"] = str(item.get("session_id", "") or "")
-    try:
-        normalized["resume_len"] = int(item.get("resume_len", 0) or 0)
-    except (TypeError, ValueError):
-        normalized["resume_len"] = 0
-    try:
-        normalized["jd_len"] = int(item.get("jd_len", 0) or 0)
-    except (TypeError, ValueError):
-        normalized["jd_len"] = 0
-    return normalized
+    return migrate_history_record(item)
 
 
 def _save_persisted_history(history: list[dict]) -> None:
@@ -104,7 +83,11 @@ def _save_persisted_history(history: list[dict]) -> None:
     lock = FileLock(str(_history_lock_path()))
     path.parent.mkdir(parents=True, exist_ok=True)
     with lock:
-        path.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(
+            path,
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 
 def _show_error_by_code(error_code: str, detail: str) -> None:
@@ -331,6 +314,24 @@ def run() -> None:
             )
         with st.expander("서비스/개인정보 설정", expanded=False):
             st.caption("운영 환경에서 저장 정책과 마스킹 정책을 조정할 수 있습니다.")
+            retriever_meta = _load_retriever_meta()
+            quality_warning = str(retriever_meta.get("category_quality_warning", "") or "").strip()
+            if quality_warning:
+                uncategorized_ratio = float(retriever_meta.get("uncategorized_ratio", 0.0) or 0.0)
+                category_distribution = retriever_meta.get("category_distribution", {})
+                if quality_warning == "uncategorized_ratio_high":
+                    st.warning(
+                        "지식 문서 카테고리 품질 경고: `uncategorized` 비율이 높습니다 "
+                        f"({uncategorized_ratio:.1%}). "
+                        "카테고리 폴더 정리 또는 메타데이터 검증(`validate_knowledge_metadata.py --strict`)을 권장합니다."
+                    )
+                elif quality_warning == "missing_required_categories":
+                    st.warning(
+                        "지식 문서 카테고리 품질 경고: 필수 카테고리 일부가 누락되었습니다. "
+                        "데이터 거버넌스 검증(`validate_knowledge_metadata.py --strict`)을 권장합니다."
+                    )
+                if isinstance(category_distribution, dict) and category_distribution:
+                    st.caption(f"카테고리 분포: {category_distribution}")
             st.checkbox(
                 "실행 입력 기록 파일 저장 사용",
                 key="persist_history_enabled",

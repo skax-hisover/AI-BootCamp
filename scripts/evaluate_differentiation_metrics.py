@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +34,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-reference-rate", type=float, default=0.8)
     parser.add_argument("--min-plan-quality-rate", type=float, default=0.8)
     parser.add_argument(
+        "--min-per-labeled-route",
+        type=int,
+        default=4,
+        help="Minimum number of cases for each labeled route(full/resume_only/interview_only/plan_only).",
+    )
+    parser.add_argument(
+        "--min-ambiguous-cases",
+        type=int,
+        default=4,
+        help="Minimum number of ambiguous(no expected_route) cases.",
+    )
+    parser.add_argument(
         "--output",
         default="",
         help="Optional output file path. When set, writes the full report with UTF-8 encoding.",
@@ -54,6 +67,32 @@ def _requires_plan(route: str) -> bool:
 
 def _normalized_route(value: str) -> str:
     return (value or "").strip().lower()
+
+
+def _case_distribution(cases: list[dict]) -> Counter[str]:
+    counter: Counter[str] = Counter()
+    for case in cases:
+        route = _normalized_route(str(case.get("expected_route", "")))
+        counter[route if route else "ambiguous"] += 1
+    return counter
+
+
+def _validate_case_distribution(
+    counter: Counter[str],
+    min_per_labeled_route: int,
+    min_ambiguous_cases: int,
+) -> list[str]:
+    failures: list[str] = []
+    for route in ("resume_only", "interview_only", "plan_only", "full"):
+        if counter.get(route, 0) < min_per_labeled_route:
+            failures.append(
+                f"[FAIL] case distribution: '{route}'={counter.get(route, 0)} < {min_per_labeled_route}"
+            )
+    if counter.get("ambiguous", 0) < min_ambiguous_cases:
+        failures.append(
+            f"[FAIL] case distribution: 'ambiguous'={counter.get('ambiguous', 0)} < {min_ambiguous_cases}"
+        )
+    return failures
 
 
 def _confusion_matrix(samples: list[RoutingSampleResult]) -> tuple[list[str], dict[str, dict[str, int]]]:
@@ -88,6 +127,7 @@ def main() -> None:
 
     service = JobPilotService()
     cases = _load_cases(cases_path)
+    case_counter = _case_distribution(cases)
     routing_samples: list[RoutingSampleResult] = []
     reference_samples: list[AnswerQualitySample] = []
     plan_quality_samples: list[AnswerQualitySample] = []
@@ -147,6 +187,14 @@ def main() -> None:
     report_lines: list[str] = []
     report_lines.append("=== Differentiation Metrics ===")
     report_lines.append(f"Cases: {len(cases)}")
+    report_lines.append(
+        "Case distribution: "
+        f"resume_only={case_counter.get('resume_only', 0)}, "
+        f"interview_only={case_counter.get('interview_only', 0)}, "
+        f"plan_only={case_counter.get('plan_only', 0)}, "
+        f"full={case_counter.get('full', 0)}, "
+        f"ambiguous={case_counter.get('ambiguous', 0)}"
+    )
     if routing_samples:
         report_lines.append(f"Routing accuracy: {routing:.2%}")
     else:
@@ -179,6 +227,16 @@ def main() -> None:
     report_lines.append("=== Case Details ===")
     for item in details:
         report_lines.append(json.dumps(item, ensure_ascii=False))
+
+    distribution_failures = _validate_case_distribution(
+        case_counter,
+        min_per_labeled_route=max(1, args.min_per_labeled_route),
+        min_ambiguous_cases=max(1, args.min_ambiguous_cases),
+    )
+    if distribution_failures:
+        report_lines.extend(distribution_failures)
+        _emit_report(report_lines, args.output)
+        raise SystemExit(distribution_failures[0])
 
     if routing_samples and routing < args.min_routing_accuracy:
         report_lines.append(

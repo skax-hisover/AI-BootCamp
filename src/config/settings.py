@@ -81,6 +81,18 @@ class Settings:
     ui_page_icon_emoji: str = "💼"
     few_shot_max_examples: int = 1
 
+    @property
+    def final_answer_cache_enabled(self) -> bool:
+        return self.graph_state_cache_enabled
+
+    @property
+    def final_answer_cache_bypass_contextual(self) -> bool:
+        return self.graph_state_cache_bypass_contextual
+
+    @property
+    def final_answer_cache_max_per_session(self) -> int:
+        return self.graph_state_cache_max_per_session
+
 
 @lru_cache(maxsize=1)
 def load_settings() -> Settings:
@@ -116,9 +128,18 @@ def load_settings() -> Settings:
     retrieval_max_chunks_per_file = _int_env("RETRIEVAL_MAX_CHUNKS_PER_FILE", 0)
     allow_uncategorized_in_filter = _bool_env("ALLOW_UNCATEGORIZED_IN_FILTER", True)
     faiss_allow_dangerous_deserialization = _bool_env("FAISS_ALLOW_DANGEROUS_DESERIALIZATION", False)
-    graph_state_cache_enabled = _bool_env("GRAPH_STATE_CACHE_ENABLED", True)
-    graph_state_cache_bypass_contextual = _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True)
-    graph_state_cache_max_per_session = _int_env("GRAPH_STATE_CACHE_MAX_PER_SESSION", 5)
+    graph_state_cache_enabled = _bool_env(
+        "FINAL_ANSWER_CACHE_ENABLED",
+        _bool_env("GRAPH_STATE_CACHE_ENABLED", True),
+    )
+    graph_state_cache_bypass_contextual = _bool_env(
+        "FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL",
+        _bool_env("GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL", True),
+    )
+    graph_state_cache_max_per_session = _int_env(
+        "FINAL_ANSWER_CACHE_MAX_PER_SESSION",
+        _int_env("GRAPH_STATE_CACHE_MAX_PER_SESSION", 5),
+    )
     state_store_backend = (os.getenv("STATE_STORE_BACKEND") or "file").strip().lower() or "file"
     state_store_dsn = (os.getenv("STATE_STORE_DSN") or "").strip()
     session_memory_persist_enabled = _bool_env(

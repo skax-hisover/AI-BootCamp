@@ -22,6 +22,8 @@ Set-Location "D:\AI-BootCamp\final-project"
 ## 구현 완료 항목
 
 - **프롬프트 엔지니어링**: Supervisor/Resume/Interview 에이전트 역할 기반 프롬프트
+- **도메인 안전 정책**: 공통 프롬프트 정책에 합격 확률/결과 보장 표현 금지(조건부·근거 기반 코칭) 규칙 명시
+- **Few-shot 운영성 개선**: Few-shot 예시는 `data/prompts/few_shots/*.md` 외부 파일에서 로드하며, 파일 누락/오류 시 코드 기본값으로 자동 fallback
 - **멀티 에이전트(LangGraph)**: Supervisor -> RAG -> (Resume/Interview/Plan) -> Synthesis 라우트 기반 분기 실행
 - **요구사항-인터페이스 정합성**: `ChatRequest`에서 `jd_text`를 명시적으로 받아 "JD vs 이력서 갭" 분석 지원
 - **에이전트 자율 정책**: 이력서 텍스트가 없을 때 Resume/Interview 에이전트의 로컬 fallback 정책 적용
@@ -29,7 +31,10 @@ Set-Location "D:\AI-BootCamp\final-project"
 - **RAG 품질**: 인덱스 영속화(`data/index/faiss`), 메타데이터 기반 컨텍스트(page/paragraph/sheet/row), route-aware 카테고리 필터 + no-hit 재검색 fallback, 전용 리랭크 레이어
 - **중복 제어 책임 분리**: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE`에서 단일 강제로 적용
 - **로더 메타데이터 병합**: `src/retrieval/documents.py`에서 문서별 `*.meta.json` sidecar의 최소 필드(`collected_at/source_url/curator/license`)를 병합 로딩하고, sidecar 누락/오류 시 경고를 출력해 추적성을 유지
-- **RAG 점수 안정성**: 하이브리드 결합 전 FAISS distance min-max 정규화 적용으로 가중치 튜닝 예측성 향상
+- **RAG 점수 안정성**: FAISS distance를 쿼리-독립 변환(`1/(1+d)`)으로 0~1 스케일링해 `RAG_EVIDENCE_SCORE_THRESHOLD` 해석 일관성 강화
+- **데이터 거버넌스 가시화**: Streamlit 사이드바에서 `retriever_meta.json`의 카테고리 품질 경고(`uncategorized` 비율/필수 카테고리 누락)를 즉시 노출
+- **파일 저장 안정성**: `session_memory.json`/`final_answer_cache.json`/`chunks.json`/`retriever_meta.json`/`ui_input_history.json` 저장 경로에 원자적 쓰기(temp->replace) 적용
+- **히스토리 스키마 진화 대응**: `record_version` 기반 `migrate_history_record()`로 구버전 실행 기록 자동 업그레이드
 - **RAG 추적성**: references에 rank/source/chunk/location/snippet 정보를 포함해 citation-근거 연결 강화
 - **References 타입 정렬**: `FinalAnswer.references`와 `ChatResponse.references`를 동일한 구조화 객체 목록으로 맞춰 synthesis 단계 타입 흔들림 방지
 - **RAG 재현성**: 형태소 분석 백엔드(`kiwi/okt/fallback`)와 검색 가중치를 `retriever_meta.json`에 기록
@@ -129,9 +134,9 @@ Copy-Item .env.example .env
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 `0`; retrieval 단계 source당 청크 상한, `0`은 비활성)
 - `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 `true`; route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 `false`로 점진적 tighten 가능)
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 `false`; 로컬 개발에서만 필요 시 `true`로 opt-in 권장)
-- `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off)
-- `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회)
-- `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 `5`; 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
+- `FINAL_ANSWER_CACHE_ENABLED` (선택, 기본 `true`; 동일 요청 결과 캐시 사용 on/off, 레거시 `GRAPH_STATE_CACHE_ENABLED`도 호환)
+- `FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 `true`; "이전 대화/다시/이어서" 등 맥락형 질의 시 캐시 자동 우회, 레거시 `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL`도 호환)
+- `FINAL_ANSWER_CACHE_MAX_PER_SESSION` (선택, 기본 `5`; 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU, 레거시 `GRAPH_STATE_CACHE_MAX_PER_SESSION`도 호환)
 - `STATE_STORE_BACKEND` (선택, 기본 `file`; `file|sqlite|redis`, 현재 구현은 `file` 우선이며 다른 값은 파일 저장소로 fallback)
 - `STATE_STORE_DSN` (선택, 기본 빈값; SQLite/Redis 확장 시 사용할 연결 문자열 예약 필드)
 
@@ -250,6 +255,7 @@ python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_quer
 ```
 
 - 지표: 라우팅 정확도(`expected_route`가 있을 때), 근거 포함률, 플랜 품질률
-- 샘플 구성: 총 22건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 2, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
+- 샘플 구성: 총 25건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 5, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
 - 기준 조정: `--min-routing-accuracy`, `--min-reference-rate`, `--min-plan-quality-rate`
+- 분포 검증: `--min-per-labeled-route`, `--min-ambiguous-cases`로 라우트/모호 질의 최소 개수 기준을 함께 검증
 - 증빙 파일은 `--output` 옵션을 사용하면 UTF-8로 저장되어 인코딩 깨짐을 방지할 수 있습니다.

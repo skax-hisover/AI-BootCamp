@@ -152,6 +152,27 @@
     "resume_text": "FastAPI 운영, AWS 배포 경험",
     "jd_text": "백엔드 채용: Python, DB 튜닝, 장애 대응",
     "expected_route": "resume_only"
+  },
+  {
+    "query": "JD 대비 이력서 개선과 면접 준비를 같이 하고, 2주 실행계획까지 만들어줘.",
+    "target_role": "데이터 분석가",
+    "resume_text": "SQL 리포트 자동화, 파이썬 데이터 전처리, 간단한 대시보드 제작 경험",
+    "jd_text": "데이터 분석가 채용: SQL 최적화, 실험 설계, 지표 정의, 이해관계자 커뮤니케이션",
+    "expected_route": "full"
+  },
+  {
+    "query": "이직 준비를 전체로 도와줘. 이력서/면접/실행계획을 한 번에 정리해줘.",
+    "target_role": "PM",
+    "resume_text": "신규 기능 우선순위 조정, KPI 대시보드 관리, 협업 일정 조율 경험",
+    "jd_text": "PM 채용: 제품 전략, 로드맵 수립, 실험 설계, 리스크 관리, 커뮤니케이션",
+    "expected_route": "full"
+  },
+  {
+    "query": "공고와 이력서를 비교해서 개선점, 면접 대비, 2주 플랜까지 통합 코칭해줘.",
+    "target_role": "백엔드 개발자",
+    "resume_text": "Python/FastAPI API 개발, 로그 모니터링, Docker 배포, 기본 장애 대응 경험",
+    "jd_text": "백엔드 채용: Python, API 성능 최적화, DB 튜닝, 장애 대응, 협업",
+    "expected_route": "full"
   }
 ]
 

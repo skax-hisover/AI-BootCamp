@@ -105,10 +105,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/chat" -Method Post -ContentType "a
   - [ ] 입력창 `max_chars` 카운터 정상 동작
   - [ ] 업로드 반영 방식(`덮어쓰기/추가하기`) 전환 시 이력서/JD 텍스트가 의도한 방식으로 반영되고 중복 누적이 발생하지 않는지 확인
   - [ ] 기록 저장 모드(`summary`/`full`) 전환 시 저장 필드가 정책대로 반영되는지 확인(`summary`는 원문 대신 길이/해시/미리보기 중심, `full`은 원문 저장)
+  - [ ] 실행 기록에 구버전 형식(v0) 샘플이 있어도 로드시 `record_version` 기반 마이그레이션으로 정상 표시/복원이 되는지 확인
+  - [ ] 동시 실행(또는 강제 중단) 상황에서도 `ui_input_history.json`/`final_answer_cache.json`/`retriever_meta.json`이 깨지지 않고 재시작 후 정상 로드되는지 확인
+  - [ ] Few-shot 외부 파일(`data/prompts/few_shots/*.md`) 수정 후 응답 스타일 반영 여부를 확인하고, 파일 누락/오류 시 기본 내장 예시로 fallback되어 실행이 지속되는지 확인
   - [ ] 응답 요약(summary)에 책임 한계 고지 문구(법/세무/노무 비전문 영역 제외 + 최신 공고/회사 정책 원문 확인)가 포함되는지 확인
   - [ ] 맥락형 질의(예: "이전 대화 기준으로 다시") 실행 시 `cached_state_hit=false`로 캐시 우회가 동작하는지(디버그 메타 표시 ON 기준) 확인
   - [ ] 디버그 메타에서 `node_status`가 노드별(`ok/degraded/skipped`)로 표시되고, 부분 실패 시 `error_code/detail`이 노출되는지 확인
   - [ ] `참고 출처 메타데이터 표시` 토글 ON/OFF에 따라 references의 `collected_at/source_url/curator/license` 노출이 전환되는지 확인
+  - [ ] 카테고리 품질 경고(`uncategorized` 비율 높음/필수 카테고리 누락)가 Streamlit 사이드바에 노출되는지 확인
   - [ ] (선택) `UI_PAGE_ICON_MODE=default` 설정 후 실행 시 페이지 아이콘이 기본 렌더링으로 표시되는지 확인
   - [ ] (선택) `인덱스 사전 빌드/로드` 버튼 정상 동작
   - [ ] (선택) `지식 문서 로드 실패 요약` 버튼 클릭 시 인덱싱 실패 파일 목록/오류가 표시되는지 확인

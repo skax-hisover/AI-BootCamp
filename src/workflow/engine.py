@@ -11,7 +11,7 @@ from typing import Any, Literal, TypeVar
 
 from filelock import FileLock
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, StateGraph
 from pydantic import BaseModel, Field
@@ -23,6 +23,7 @@ from src.common import ErrorCodes, JobPilotError
 from src.config import get_chat_model, load_settings
 from src.retrieval import HybridRetriever, SearchHit, rerank_hits
 from src.utils.memory import SessionMemory
+from src.utils.io import atomic_write_text
 from src.workflow.contracts import (
     STRUCTURED_OUTPUT_REPAIR_ENABLED,
     STRUCTURED_OUTPUT_RETRY_MAX,
@@ -771,6 +772,24 @@ def _needs_citation_rewrite(payload: dict[str, Any], references: list[dict[str, 
     return False
 
 
+def _load_few_shot_bank(
+    *,
+    agent_name: str,
+    default_bank: dict[str, str],
+    base_dir: Path,
+) -> dict[str, str]:
+    """Load few-shot examples from disk with safe fallback to built-in defaults."""
+    loaded: dict[str, str] = {}
+    for key, default_text in default_bank.items():
+        file_path = base_dir / f"{agent_name}_{key}.md"
+        try:
+            text = file_path.read_text(encoding="utf-8").strip()
+            loaded[key] = text or default_text.strip()
+        except Exception:
+            loaded[key] = default_text.strip()
+    return loaded
+
+
 def build_graph(retriever: HybridRetriever, memory: SessionMemory):
     settings = load_settings()
     supervisor_llm = get_chat_model(temperature=0.0)
@@ -783,7 +802,10 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
     interview_system_prompt = build_specialist_system_prompt(
         "Interview Agent", "근거 기반 면접 코칭에 집중하고 필요 시 도구를 자율 호출하세요."
     )
-    resume_few_shot_bank = {
+    plan_system_prompt = build_specialist_system_prompt(
+        "Plan Agent", "근거 기반 실행계획을 작성하고 필요 시 추가 검색 도구를 자율 호출하세요."
+    )
+    resume_few_shot_defaults = {
         "backend": """
 [Few-shot 예시]
 입력:
@@ -819,7 +841,7 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 """.strip(),
     }
 
-    interview_few_shot_bank = {
+    interview_few_shot_defaults = {
         "backend": """
 [Few-shot 예시]
 입력: 백엔드 개발자 면접 준비
@@ -845,6 +867,18 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
 - 피해야 할 패턴: 도구 나열만 하고 비즈니스 연결이 없는 답변
 """.strip(),
     }
+
+    few_shot_dir = Path(__file__).resolve().parents[2] / "data" / "prompts" / "few_shots"
+    resume_few_shot_bank = _load_few_shot_bank(
+        agent_name="resume",
+        default_bank=resume_few_shot_defaults,
+        base_dir=few_shot_dir,
+    )
+    interview_few_shot_bank = _load_few_shot_bank(
+        agent_name="interview",
+        default_bank=interview_few_shot_defaults,
+        base_dir=few_shot_dir,
+    )
 
     def _few_shot_key(target_role: str) -> str:
         role = (target_role or "").lower()
@@ -964,7 +998,10 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
         if not payloads:
             return True
         merged_text = " ".join([*notes.key_findings, *notes.improvement_points]).lower()
+        checked = 0
         for payload in payloads:
+            if str(payload.get("tool", "")).strip().lower() == "specialist_retrieve":
+                continue
             expected_tokens: list[str] = []
             matched = payload.get("matched_keywords", [])
             missing = payload.get("missing_keywords", [])
@@ -981,26 +1018,31 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
                 expected_tokens.extend(str(item).lower() for item in missing_preferred if str(item).strip())
             if score is not None:
                 expected_tokens.extend([str(score), f"{score}%"])
+            checked += 1
             if any(token and token in merged_text for token in expected_tokens):
                 return True
-        return False
+        return checked == 0
 
     def _interview_tool_reflected(notes: InterviewNotes, tool_outputs: list[str]) -> bool:
         payloads = _extract_tool_payloads(tool_outputs)
         if not payloads:
             return True
         merged_questions = " ".join(notes.expected_questions).lower()
+        checked = 0
         for payload in payloads:
+            if str(payload.get("tool", "")).strip().lower() == "specialist_retrieve":
+                continue
             questions = payload.get("questions", [])
             if not isinstance(questions, list):
                 continue
+            checked += 1
             for question in questions:
                 q = str(question).strip().lower()
                 if not q:
                     continue
                 if q in merged_questions or q[:12] in merged_questions:
                     return True
-        return False
+        return checked == 0
 
     def _tool_outputs_preview(tool_outputs: list[str], limit: int = 2) -> str:
         if not tool_outputs:
@@ -1311,6 +1353,57 @@ def build_graph(retriever: HybridRetriever, memory: SessionMemory):
             return f"row={metadata['row_number']}"
         return "n/a"
 
+    @tool("specialist_retrieve")
+    def specialist_retrieve(
+        query: str,
+        route_hint: str = "full",
+        top_k: int = 3,
+        broaden: bool = False,
+    ) -> str:
+        """Specialist RAG retrieval tool for node-level autonomous evidence expansion."""
+        safe_k = max(1, min(int(top_k), 6))
+        route_key = (route_hint or "full").strip().lower()
+        retrieval_source_cap = (
+            settings.retrieval_max_chunks_per_file
+            if not settings.rerank_enabled
+            else 0
+        )
+        category_filter = None if broaden else _category_filter_for_route(route_key)
+        hits = retriever.search(
+            query,
+            top_k=safe_k,
+            category_filter=category_filter,
+            max_chunks_per_file=retrieval_source_cap,
+        )
+        if (not hits) and category_filter:
+            hits = retriever.search(
+                query,
+                top_k=safe_k,
+                category_filter=None,
+                max_chunks_per_file=retrieval_source_cap,
+            )
+        payload = [
+            {
+                "rank": i,
+                "source": hit.source,
+                "score": hit.score,
+                "category": hit.metadata.get("category"),
+                "chunk_id": hit.metadata.get("chunk_id"),
+                "location": _location_label(hit.metadata),
+                "snippet": hit.content[:180].replace("\n", " "),
+            }
+            for i, hit in enumerate(hits, start=1)
+        ]
+        return json.dumps(
+            {
+                "tool": "specialist_retrieve",
+                "query": query,
+                "route_hint": route_key,
+                "hits": payload,
+            },
+            ensure_ascii=False,
+        )
+
     def _specialist_local_recovery(
         state: AgentState,
         specialist: Literal["resume", "interview", "plan"],
@@ -1438,7 +1531,7 @@ rag_low_confidence={state.get('rag_low_confidence', False)}
 
 규칙:
 - resume/interview는 이력서 원문이 없으면 need_tool_call=false 우선.
-- plan은 need_tool_call=false 유지.
+- plan은 기본적으로 need_tool_call=false를 우선하되, rag_low_confidence=true이면 true를 선택할 수 있다.
 - focus_areas는 2~4개, omit_areas는 최대 3개.
 """
             )
@@ -1610,7 +1703,7 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
         resume_notes = _format_resume_notes(state.get("resume_notes", {}))
         interview_notes = _format_interview_notes(state.get("interview_notes", {}))
         try:
-            structured = _invoke_structured_with_repair(
+            structured, _ = _run_tool_loop_structured_with_trace(
                 prompt=f"""
 당신은 Plan Agent입니다.
 {build_common_policy_block(include_plan_citation=True)}
@@ -1642,9 +1735,12 @@ source_hint는 직무 연관 키워드로 짧게 작성하라.
 요구사항:
 - priorities, weekly_schedule, validation_checks를 균형 있게 작성
 - evidence_map 필수: key는 계획 항목, value는 근거 번호 목록(예: [1,2])
+- 근거가 부족하거나 모호하면 specialist_retrieve 도구를 호출해 추가 근거를 확보하세요.
 """,
-                schema=PlanNotes,
-                base_temperature=0.15,
+                tools=[specialist_retrieve],
+                output_schema=PlanNotes,
+                model_temperature=0.15,
+                system_prompt=plan_system_prompt,
             )
             payload = _sanitize_notes_evidence_map(
                 structured.model_dump(),
@@ -1703,6 +1799,7 @@ RAG 근거:
 7) JD/공고 텍스트가 있으면 JD 요구역량과 이력서 간 갭을 항목별로 명시적으로 비교하세요.
 8) evidence_map 필수: key는 개선/진단 문장, value는 관련 근거 번호 목록(예: [1,2])입니다.
 9) 도구를 호출했다면 도구 결과(JSON)의 score/keywords/missing_required_top을 최소 1회 이상 key_findings 또는 improvement_points에 반영하세요.
+10) 근거가 부족하거나 모호하면 specialist_retrieve 도구로 추가 검색을 수행하세요.
 
 [Few-shot]
 {_select_few_shots(resume_few_shot_bank, state['target_role'])}
@@ -1752,7 +1849,7 @@ RAG 근거:
                     }
                 structured, tool_outputs = _run_tool_loop_structured_with_trace(
                     prompt=prompt,
-                    tools=[resume_keyword_match_score, jd_resume_gap_score],
+                    tools=[resume_keyword_match_score, jd_resume_gap_score, specialist_retrieve],
                     output_schema=ResumeNotes,
                     model_temperature=0.15,
                     system_prompt=resume_system_prompt,
@@ -1767,7 +1864,7 @@ RAG 근거:
                     )
                     structured, _ = _run_tool_loop_structured_with_trace(
                         prompt=retry_prompt,
-                        tools=[resume_keyword_match_score, jd_resume_gap_score],
+                        tools=[resume_keyword_match_score, jd_resume_gap_score, specialist_retrieve],
                         output_schema=ResumeNotes,
                         model_temperature=0.15,
                         system_prompt=resume_system_prompt,
@@ -1826,6 +1923,7 @@ RAG 근거:
 7) JD/공고 텍스트가 있으면 JD 요구역량을 기준으로 질문 우선순위를 조정하세요.
 8) evidence_map 필수: key는 질문/답변 문장, value는 관련 근거 번호 목록(예: [1,2])입니다.
 9) 도구를 호출했다면 도구 결과(JSON)의 questions를 최소 1회 이상 expected_questions에 반영하세요.
+10) 근거가 부족하거나 모호하면 specialist_retrieve 도구로 추가 검색을 수행하세요.
 
 [Few-shot]
 {_select_few_shots(interview_few_shot_bank, state['target_role'])}
@@ -1875,7 +1973,7 @@ RAG 근거:
                     }
                 structured, tool_outputs = _run_tool_loop_structured_with_trace(
                     prompt=prompt,
-                    tools=[interview_question_bank],
+                    tools=[interview_question_bank, specialist_retrieve],
                     output_schema=InterviewNotes,
                     model_temperature=0.25,
                     system_prompt=interview_system_prompt,
@@ -1890,7 +1988,7 @@ RAG 근거:
                     )
                     structured, _ = _run_tool_loop_structured_with_trace(
                         prompt=retry_prompt,
-                        tools=[interview_question_bank],
+                        tools=[interview_question_bank, specialist_retrieve],
                         output_schema=InterviewNotes,
                         model_temperature=0.25,
                         system_prompt=interview_system_prompt,
@@ -1977,7 +2075,7 @@ RAG 근거:
 - plan_only에서도 summary는 1~2문장으로 반드시 작성.
 - route가 full 또는 plan_only인 경우 Plan Agent 결과를 우선 반영해 two_week_plan 작성.
 - references는 임의 생성하지 말고 비워두거나 제공된 구조를 유지하세요(후처리에서 rag_refs 기준으로 정규화).
-- references가 비어 있어도 액션 불릿에는 기본 citation `[1]`을 우선 표기하세요(후처리에서 references/evidence_map 정합성 보정).
+- references가 있을 때만 액션 불릿에 유효 citation(`[1]`~`[{len(state.get("rag_refs", []) or [])}]`)을 표기하고, references가 비어 있으면 citation을 생략하세요.
 - 책임 한계 고지 템플릿을 summary에 포함:
   "법/세무/노무 등 비전문 영역은 별도 확인이 필요하며 최신 공고/회사 정책은 반드시 원문 확인이 필요합니다."
 
@@ -2110,7 +2208,7 @@ class JobPilotService:
         self.final_answer_cache_path = settings.index_dir / "final_answer_cache.json"
         self.final_answer_cache_lock = FileLock(str(settings.index_dir / "final_answer_cache.json.lock"))
         # Legacy path for backward compatibility with old cache file name.
-        self.legacy_graph_state_cache_path = settings.index_dir / "graph_state_cache.json"
+        self.legacy_final_answer_cache_path = settings.index_dir / "graph_state_cache.json"
         # NOTE: This is a final-answer payload cache (normalized ChatResponse),
         # not a full LangGraph node-by-node checkpoint store.
         self.retriever = HybridRetriever.build()
@@ -2129,9 +2227,9 @@ class JobPilotService:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _should_bypass_cache(self, req: ChatRequest) -> bool:
-        if not self.settings.graph_state_cache_enabled:
+        if not self.settings.final_answer_cache_enabled:
             return True
-        if not self.settings.graph_state_cache_bypass_contextual:
+        if not self.settings.final_answer_cache_bypass_contextual:
             return False
         query = (req.user_query or "").lower()
         contextual_triggers = (
@@ -2146,10 +2244,10 @@ class JobPilotService:
         )
         return any(token in query for token in contextual_triggers)
 
-    def _load_graph_state_cache(self) -> dict[str, Any]:
+    def _load_final_answer_cache(self) -> dict[str, Any]:
         cache_path = self.final_answer_cache_path
-        if not cache_path.exists() and self.legacy_graph_state_cache_path.exists():
-            cache_path = self.legacy_graph_state_cache_path
+        if not cache_path.exists() and self.legacy_final_answer_cache_path.exists():
+            cache_path = self.legacy_final_answer_cache_path
         if not cache_path.exists():
             return {}
         try:
@@ -2158,9 +2256,9 @@ class JobPilotService:
         except Exception:
             return {}
 
-    def _save_graph_state_cache(self, payload: dict[str, Any]) -> None:
-        self.final_answer_cache_path.parent.mkdir(parents=True, exist_ok=True)
-        self.final_answer_cache_path.write_text(
+    def _save_final_answer_cache(self, payload: dict[str, Any]) -> None:
+        atomic_write_text(
+            self.final_answer_cache_path,
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -2170,12 +2268,12 @@ class JobPilotService:
             return None
         signature = self._request_signature(req)
         with self.final_answer_cache_lock:
-            cache = self._load_graph_state_cache()
+            cache = self._load_final_answer_cache()
         record = cache.get(req.session_id, {})
         return _cache_record_payload_for_request(record, signature)
 
-    def _upsert_graph_state_cache(self, req: ChatRequest, result: AgentState) -> None:
-        if not self.settings.graph_state_cache_enabled:
+    def _upsert_final_answer_cache(self, req: ChatRequest, result: AgentState) -> None:
+        if not self.settings.final_answer_cache_enabled:
             return
         route = str(result.get("route", "full"))
         node_status = derive_node_status(route, result)
@@ -2198,14 +2296,14 @@ class JobPilotService:
         )
         signature = self._request_signature(req)
         with self.final_answer_cache_lock:
-            cache = self._load_graph_state_cache()
+            cache = self._load_final_answer_cache()
             cache[req.session_id] = _upsert_cache_record(
                 record=cache.get(req.session_id, {}),
                 signature=signature,
                 payload=payload,
-                max_items=self.settings.graph_state_cache_max_per_session,
+                max_items=self.settings.final_answer_cache_max_per_session,
             )
-            self._save_graph_state_cache(cache)
+            self._save_final_answer_cache(cache)
 
     def run(self, req: ChatRequest) -> ChatResponse:
         try:
@@ -2240,7 +2338,7 @@ class JobPilotService:
                     detail="Missing final_answer in graph result.",
                     status_code=500,
                 )
-            self._upsert_graph_state_cache(req, result)
+            self._upsert_final_answer_cache(req, result)
             route = str(result.get("route", "full"))
             node_status = derive_node_status(route, result)
             payload = enforce_chat_response_contract(

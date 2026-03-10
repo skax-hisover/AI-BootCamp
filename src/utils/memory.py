@@ -23,6 +23,7 @@ from threading import RLock
 
 from filelock import FileLock
 
+from src.utils.io import atomic_write_text
 from src.utils.pii import mask_pii_text
 
 
@@ -167,7 +168,11 @@ class SessionMemory:
             "updated_at": self._updated_at,
             "meta": {"max_sessions": self.max_sessions, "ttl_seconds": self.ttl_seconds},
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_text(
+            path,
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
     def add(self, session_id: str, role: str, content: str) -> None:
         now = time.time()

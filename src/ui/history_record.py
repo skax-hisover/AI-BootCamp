@@ -46,6 +46,40 @@ def _summary_response(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def migrate_history_record(item: dict[str, Any]) -> dict[str, Any]:
+    """Upgrade a history record to the latest schema version."""
+    normalized = dict(item)
+    version = _to_int(normalized.get("record_version", 0), default=0)
+    if version <= 0:
+        # v0 -> v1: add explicit schema version and normalize minimal required fields.
+        normalized["record_version"] = 1
+    else:
+        normalized["record_version"] = version
+
+    normalized["storage_mode"] = (
+        str(normalized.get("storage_mode", "full"))
+        if str(normalized.get("storage_mode", "full")) in {"summary", "full"}
+        else "full"
+    )
+    normalized["query"] = str(normalized.get("query", "") or "")
+    normalized["target_role"] = str(normalized.get("target_role", "백엔드 개발자") or "백엔드 개발자")
+    normalized["session_id"] = str(normalized.get("session_id", "") or "")
+    normalized["resume_len"] = _to_int(normalized.get("resume_len", 0), default=0)
+    normalized["jd_len"] = _to_int(normalized.get("jd_len", 0), default=0)
+    normalized["resume_text"] = str(normalized.get("resume_text", "") or "")
+    normalized["jd_text"] = str(normalized.get("jd_text", "") or "")
+    if "response" in normalized and not isinstance(normalized.get("response"), dict):
+        normalized["response"] = {}
+    return normalized
+
+
 def build_history_record(
     *,
     session_id: str,

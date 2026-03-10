@@ -75,9 +75,9 @@ pip install -r requirements-final.txt
 - `RETRIEVAL_MAX_CHUNKS_PER_FILE` (선택, 기본 0 / retrieval 단계 source당 청크 상한, 0이면 비활성)
 - `ALLOW_UNCATEGORIZED_IN_FILTER` (선택, 기본 true / route 필터에서 `uncategorized` 허용 여부, 운영 단계에서 false로 점진적 tighten 가능)
 - `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` (선택, 기본 false / 로컬 개발에서만 필요 시 true opt-in)
-- `GRAPH_STATE_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off)
-- `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회)
-- `GRAPH_STATE_CACHE_MAX_PER_SESSION` (선택, 기본 5 / 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU)
+- `FINAL_ANSWER_CACHE_ENABLED` (선택, 기본 true / 동일 요청 결과 캐시 사용 on/off, 레거시 `GRAPH_STATE_CACHE_ENABLED` 호환)
+- `FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL` (선택, 기본 true / "이전 대화/다시/이어서" 질의 시 캐시 자동 우회, 레거시 `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 호환)
+- `FINAL_ANSWER_CACHE_MAX_PER_SESSION` (선택, 기본 5 / 세션별 캐시 보관 개수, `session_id + request_signature` 기반 LRU, 레거시 `GRAPH_STATE_CACHE_MAX_PER_SESSION` 호환)
 - `STATE_STORE_BACKEND` (선택, 기본 file / `file|sqlite|redis` 스위치, 현재는 file 구현 우선 + 비file 값은 fallback)
 - `STATE_STORE_DSN` (선택, 기본 빈값 / SQLite·Redis 확장용 DSN 예약 필드)
 
@@ -115,9 +115,10 @@ python scripts/run_streamlit.py
   ```powershell
   python scripts/evaluate_differentiation_metrics.py --cases data/eval/sample_queries.json
   ```
-  - 현재 샘플 구성은 총 22건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 2, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
+  - 현재 샘플 구성은 총 25건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 5, 모호 질의 5)으로 라우트 균형 + 경계조건을 함께 검증
   - 샘플 질의셋의 `expected_route`가 있을 경우 Top-1 라우팅 정확도를 계산
   - `references >= 1` 비율, `two_week_plan >= 4` 비율을 함께 계산
+  - 분포 보정 검증: `--min-per-labeled-route`, `--min-ambiguous-cases`로 라벨/모호 질의 최소 개수를 함께 검증
   - 임계치 미달 시 non-zero 종료코드로 CI/배치 점검 가능
 
 ## 4-2) RAG 범위/안전 정책
@@ -139,7 +140,7 @@ python scripts/validate_knowledge_metadata.py --strict
 
 | 필수 항목 | 반영 내용 | 구현 위치 |
 |---|---|---|
-| 1) Prompt Engineering | 역할 기반 프롬프트(Supervisor/Resume/Interview), Few-shot 예시 반영, 근거 기반 요약/생각 과정 비노출 지시, 구조화 출력 지시 | `src/workflow/engine.py`, `src/agents/schemas.py` |
+| 1) Prompt Engineering | 역할 기반 프롬프트(Supervisor/Resume/Interview), Few-shot 예시 반영(외부 파일 로드+fallback), 근거 기반 요약/생각 과정 비노출 지시, 합격 확률/결과 보장 표현 금지, 구조화 출력 지시 | `src/workflow/engine.py`, `src/workflow/prompts.py`, `src/agents/schemas.py`, `data/prompts/few_shots/*` |
 | 2) LangChain/LangGraph Multi-Agent | Multi-Agent 그래프 구성(Supervisor/RAG/Resume/Interview/Plan), Tool Calling, 세션 메모리 활용, LangGraph Checkpointer(`thread_id=session_id`) 기반 실행 상태 복원 | `src/workflow/engine.py`, `src/agents/tools.py`, `src/utils/memory.py` |
 | 3) RAG | 문서 로딩/전처리/청킹, 임베딩, FAISS + BM25 하이브리드 검색, 근거 출처 반환 (`.txt/.md/.csv/.pdf/.docx/.xlsx`) | `src/retrieval/documents.py`, `src/retrieval/hybrid.py`, `data/knowledge/*` |
 | 4) 서비스 개발/패키징 | Streamlit UI(이력서 파일 업로드 + 실행 입력 기록 조회/삭제 + 다시 불러오기), FastAPI 백엔드, CLI 엔트리, 실행 스크립트, `.env` 설정 관리, API 예외 처리 | `src/ui/streamlit_app.py`, `src/api/app.py`, `main.py`, `scripts/*`, `src/config/*` |
@@ -195,15 +196,16 @@ python scripts/validate_knowledge_metadata.py --strict
 - 한국어 BM25 개선: kiwi/konlpy 형태소 분석 옵션(설치 시 자동 활용), 미설치 시 조사 제거 기반 fallback 토크나이저 사용
 - 재현성 강화: `retriever_meta.json`에 tokenizer backend(`kiwi/okt/fallback`)와 하이브리드 가중치(`vector_weight`, `bm25_weight`) 기록
 - RAG 안전정책 코드 반영: 최고 점수가 `RAG_EVIDENCE_SCORE_THRESHOLD` 미만이면 근거 부족 모드로 전환해 보수적 표현을 우선
-- 벡터 점수 정규화 안정화: FAISS distance를 retrieval set 기준 min-max 정규화 후 BM25와 결합해 가중치 튜닝 예측 가능성 향상
+- 벡터 점수 정규화 안정화: FAISS distance를 쿼리-독립 변환(`1/(1+d)`)으로 0~1 스케일링해 low-confidence 임계치 해석의 일관성 확보
 - 중복 제어 역할 분리: rerank 활성 시 retrieval 단계 source 상한(`RETRIEVAL_MAX_CHUNKS_PER_FILE`)은 비활성화하고, 최종 다양성 제어는 `RERANK_MAX_PER_SOURCE`에서 단일 강제로 운영
 - 카테고리 품질 진단 추가: `HybridRetriever.build()`에서 카테고리 분포와 `uncategorized` 비율을 점검하고, 비중 과다 시 경고를 출력하며 `retriever_meta.json`에 진단 결과 기록
+- UI 품질 경고 연결: Streamlit 사이드바에서 `retriever_meta.json`의 `category_quality_warning`/`uncategorized_ratio`를 즉시 노출해 데이터 거버넌스 이슈를 실행 전에 인지 가능
 - 리랭크 확장성 분리: 휴리스틱 리랭커를 `src/retrieval/rerank.py`로 분리하고 `RERANK_ENABLED`, `RERANK_PROVIDER` 설정 기반 on/off·전략 전환 포인트 제공
 - 업로드 입력 근거 강화: `rag_node`에서 `jd_text/resume_text`를 임시 청크로 생성해 검색 후보에 혼합(ephemeral evidence)하여 공고-이력서 갭 분석의 직접 근거성을 보강
 - 업로드 이력서 카테고리 분리: `resume_text` 기반 임시 청크는 `resume_upload`로 분류해 지식 문서 카테고리(`portfolio_examples`)와 의미를 분리하고, rerank에서 별도 가중으로 반영
 - 체크포인터 실효성 보강: `MemorySaver`와 별개로 `final_answer_cache.json`(파일+락) 기반 invoke 전/후 캐시를 추가해 동일 입력 재실행 시 결과 재사용(재시작 이후에도 캐시 복원) 지원
   - 용어 정리: 위 캐시는 "그래프 중간 상태"가 아니라 정규화된 최종 `ChatResponse` payload 재사용 캐시
-- 캐시 안전장치 추가: `GRAPH_STATE_CACHE_ENABLED`, `GRAPH_STATE_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
+- 캐시 안전장치 추가: `FINAL_ANSWER_CACHE_ENABLED`, `FINAL_ANSWER_CACHE_BYPASS_CONTEXTUAL` 옵션과 맥락형 질의("이전 대화/다시/이어서") 자동 우회 규칙으로 캐시 오적용 위험 완화
 - 도구 도메인 특화 강화: `jd_resume_gap_score` 도구를 추가해 JD 필수/우대 키워드 매칭률과 누락 역량 top-N을 Resume Agent가 정량 근거로 반영
 - 도구 매칭 신뢰도 보강: `tools.py`에 kiwi 토크나이저(설치 시) + 동의어 정규화(`RDBMS↔DB`, `Fast-API↔fastapi` 등)를 적용해 표기 변형에 대한 강건성 향상
 - Tool Calling 진입점 명확화: `_run_tool_loop_structured_with_trace()`에서 `bind_tools()`로 도구 목록을 모델에 주입하고 `tool_calls`를 모델이 자율 선택하는 흐름을 코드 주석으로 명시
@@ -214,6 +216,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - API 계약 명시 강화: `/chat` 엔드포인트에 `response_model=ChatResponse`를 지정해 OpenAPI 문서/클라이언트 계약 안정성을 강화
 - UI route-aware 안내 보강: 비활성 섹션을 숨기는 대신 라우트별 생략 안내 문구(예: resume_only에서 면접/플랜 생략)를 조건부 표시
 - 동시성 범위 확장: `ui_input_history.json` 로드/저장에도 파일 락(`ui_input_history.json.lock`)을 적용해 멀티세션 경합 내구성 강화
+- 원자적 파일 저장 적용: `session_memory.json`/`final_answer_cache.json`/`chunks.json`/`retriever_meta.json`/`ui_input_history.json`은 temp 파일 후 `replace` 방식으로 저장해 부분쓰기 리스크 완화
 - JD 입력 방어 대칭화: Streamlit에 JD 자동 압축(앞/뒤 유지) 옵션 및 목표 글자 수 설정을 추가해 긴 공고 텍스트 처리 비용을 완화
 - 업로드 UX 보강: 파일 업로드 반영 방식을 `덮어쓰기/추가하기`로 선택 가능하게 하고 업로드 시그니처로 중복 반영(누적 혼선)을 방지
 - 파일 파서 공통화: Streamlit 업로드 파서와 RAG 문서 로더가 `src/utils/file_extract.py`를 공통 사용해 포맷별 파싱/예외 처리를 단일화
@@ -222,6 +225,7 @@ python scripts/validate_knowledge_metadata.py --strict
 - 멀티유저 방어 로직: SessionMemory에 TTL/최대 세션 수 제한 추가(메모리 누적 방지)
 - 대용량 입력 방어: Streamlit에서 질문/이력서 입력란 내부 실시간 카운터(`max_chars`) + 하드 제한 및 긴 이력서 자동 압축(앞/뒤 중심) 옵션 제공
 - 파일 경합 완화: `SessionMemory` 저장/조회 경로에 파일 락 적용(`session_memory.json.lock`)
+- 히스토리 스키마 마이그레이션: `record_version` 기반 `migrate_history_record()`를 통해 구버전 기록(v0)도 로드시 최신 스키마(v1)로 정규화
 - 실행 재현성 강화: `requirements-final.txt` 핵심 의존성 버전 고정 및 `.env.example` 제공
 - 도구 반영 검증 강화: `resume_node/interview_node`에서 ToolMessage(JSON) 반영 여부를 키워드/질문 기준으로 점검하고, 미반영 시 검증 피드백을 포함해 1회 재시도하도록 보완
 - `plan_only` 요약 가독성 강화: `normalize_final_answer_by_route()` 후처리에서 summary를 1~2문장(과도 길이 시 절단)으로 강제해 UI 카드 길이 편차를 안정화

@@ -35,6 +35,7 @@
   - 실행 플랜 품질: `two_week_plan` 항목의 실행 가능성(구체 행동/기한/우선순위 포함 여부) 점수화(예: 5점 척도) 비교
   - 자동화 경로: `scripts/evaluate_differentiation_metrics.py` + `data/eval/sample_queries.json`로 배치 평가(임계치 미달 시 실패 코드 반환)
   - 경계 조건 운영 원칙: 샘플 질의셋은 고정 라벨 케이스(`resume_only/interview_only/plan_only/full`)와 무라벨 모호 질의를 혼합해, 라우팅 안정성과 실서비스 유사성을 함께 점검
+  - 분포 기준: 현재 샘플 구성은 총 25건(`resume_only` 5, `interview_only` 5, `plan_only` 5, `full` 5, 모호 질의 5)이며, 평가 스크립트에서 라벨/모호 질의 최소 개수 기준을 함께 검증
 
 ### **1.3 대상 사용자 및 기대 사용자 경험(UX)**
 
@@ -57,9 +58,10 @@
   Supervisor, Resume Agent, Interview Agent, RAG Agent 각각의 시스템 프롬프트 분리
 
 - **고품질 응답 전략(Few-shot + 근거 기반 요약)**  
-  직무별 예시 답변(Few-shot) + 근거 문장/출처 기반 요약 + 금지 규칙(근거 없는 단정 금지, 생각 과정 비노출)
+  직무별 예시 답변(Few-shot) + 근거 문장/출처 기반 요약 + 금지 규칙(근거 없는 단정 금지, 생각 과정 비노출, 합격 확률/결과 보장 표현 금지)
   - Tool 활용 실효성 강화: 도구 출력은 JSON(점수/키워드/질문 배열)으로 표준화하고, Agent가 이를 최소 1회 이상 본문에 반영하도록 지시
   - 운영 비용 제어: Few-shot은 직무별 최소 예시만 선택 주입(`FEW_SHOT_MAX_EXAMPLES`)하고, 확장 예시는 지식문서(RAG exemplar)로 관리해 토큰 비용을 제한
+  - 운영 편의성 강화: Few-shot 예시는 `data/prompts/few_shots/*.md`에서 로드하고, 파일 누락/오류 시 기본 내장 예시로 fallback해 서비스 중단을 방지
 
 - **출력 구조화 템플릿 정의**  
   JSON 스키마 기반 출력(요약, 강점/약점, 개선안, 근거 출처, 다음 액션)
@@ -103,6 +105,7 @@
   - 재현성 관리: 형태소 분석기(`kiwi/okt`) 사용 여부와 fallback 토크나이저 적용 결과를 메타에 기록해 환경별 품질 편차를 추적
   - 튜닝 포인트 분리: 하이브리드 가중치(`VECTOR_WEIGHT`, `BM25_WEIGHT`)를 설정값으로 분리해 실험/운영에서 빠르게 조정
   - 안전모드 고도화: 검색 결과가 있더라도 최고 점수가 임계치 미만이면(`RAG_EVIDENCE_SCORE_THRESHOLD`) 근거 부족 모드로 전환해 보수적 표현을 우선
+  - 점수 스케일 정합성: FAISS distance는 쿼리-독립 변환(`1/(1+d)`)으로 0~1 유사도 스케일로 맞춘 뒤 융합해 low-confidence 임계치 해석 일관성을 유지
   - 내구성 보강: route-aware 카테고리 필터 적용 후 결과가 비면 필터 없이 재검색(fallback)해 근거 누락을 완화
   - 캐시 로드 안전성: FAISS 캐시 로드시 `retriever_meta.json`에 저장된 `cache_hashes`와 실제 `index.faiss/index.pkl` SHA-256을 대조해 일치할 때만 재사용(불일치 시 재생성)
   - 배포 보안 기본값: `FAISS_ALLOW_DANGEROUS_DESERIALIZATION` 기본값은 `false`이며, 로컬 개발 환경에서만 필요 시 `true`로 opt-in

@@ -18,6 +18,7 @@ from rank_bm25 import BM25Okapi
 from src.common import JobPilotError
 from src.config import get_embedding_model, load_settings
 from src.retrieval.documents import chunk_documents, iter_source_files, load_documents_with_report
+from src.utils.io import atomic_write_text
 
 
 _FALLBACK_STOPWORDS = {
@@ -357,7 +358,11 @@ class HybridRetriever:
         chunks_payload = [
             {"page_content": chunk.page_content, "metadata": chunk.metadata} for chunk in chunks
         ]
-        chunks_path.write_text(json.dumps(chunks_payload, ensure_ascii=False), encoding="utf-8")
+        atomic_write_text(
+            chunks_path,
+            json.dumps(chunks_payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
         diagnostics = _category_diagnostics(chunks)
         if diagnostics.get("category_quality_warning"):
             print(
@@ -365,7 +370,8 @@ class HybridRetriever:
                 diagnostics.get("category_quality_warning"),
                 diagnostics.get("category_distribution"),
             )
-        meta_path.write_text(
+        atomic_write_text(
+            meta_path,
             json.dumps(
                 {
                     "signature": signature,
@@ -404,18 +410,11 @@ class HybridRetriever:
         docs_with_scores = self.vector_db.similarity_search_with_score(query, k=top_k)
         if not docs_with_scores:
             return {}
-
-        # FAISS distance: lower is better.
-        # Apply min-max normalization on retrieved set for a more stable fusion scale.
-        raw = np.array([distance for _, distance in docs_with_scores], dtype=float)
-        min_val = float(raw.min())
-        max_val = float(raw.max())
-        if (max_val - min_val) <= 1e-8:
-            normalized = np.ones_like(raw, dtype=float)
-        else:
-            normalized = 1.0 - ((raw - min_val) / (max_val - min_val))
         scores: dict[int, float] = {}
-        for (doc, _), score in zip(docs_with_scores, normalized):
+        # Use a query-independent transform for FAISS distances so threshold semantics
+        # remain stable across queries: distance -> similarity in [0, 1] via 1/(1+d).
+        for doc, distance in docs_with_scores:
+            score = 1.0 / (1.0 + max(float(distance), 0.0))
             idx = doc.metadata.get("chunk_id")
             if isinstance(idx, int):
                 scores[idx] = float(score)

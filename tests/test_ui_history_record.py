@@ -1,4 +1,4 @@
-from src.ui.history_record import build_history_record
+from src.ui.history_record import build_history_record, migrate_history_record
 
 
 def _sample_response() -> dict:
@@ -50,4 +50,22 @@ def test_build_history_record_full_mode_keeps_raw_text() -> None:
     assert record["resume_text"] == "resume text"
     assert record["jd_text"] == "jd text"
     assert record["response"]["summary"] == "요약"
+
+
+def test_migrate_history_record_v0_to_v1() -> None:
+    legacy = {
+        "session_id": "s1",
+        "query": "q",
+        "target_role": "백엔드 개발자",
+        "resume_len": "11",
+        "jd_len": "7",
+        "storage_mode": "summary",
+        "response": "legacy text",
+    }
+    migrated = migrate_history_record(legacy)
+    assert migrated["record_version"] == 1
+    assert migrated["resume_len"] == 11
+    assert migrated["jd_len"] == 7
+    assert migrated["storage_mode"] == "summary"
+    assert isinstance(migrated["response"], dict)
 
