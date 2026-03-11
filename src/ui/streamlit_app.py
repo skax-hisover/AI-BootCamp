@@ -436,12 +436,12 @@ def run() -> None:
     )
     uploaded_resume = st.file_uploader(
         "이력서 파일 업로드(선택)",
-        type=["txt", "md", "pdf", "docx", "xlsx"],
+        type=["txt", "md", "csv", "pdf", "docx", "xlsx"],
         help="업로드하면 파일 내용이 아래 이력서 텍스트에 자동 반영됩니다.",
     )
     uploaded_jd = st.file_uploader(
         "JD/공고 파일 업로드(선택)",
-        type=["txt", "md", "pdf", "docx", "xlsx"],
+        type=["txt", "md", "csv", "pdf", "docx", "xlsx"],
         help="업로드하면 파일 내용이 아래 JD/공고 텍스트에 자동 반영됩니다.",
     )
 

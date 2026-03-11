@@ -152,6 +152,7 @@ python scripts/validate_knowledge_metadata.py --strict
 ## 6) 최근 현행화 반영 사항
 
 - RAG 문서 로더 지원 포맷 확대: `.pdf`, `.docx`, `.xlsx` 추가
+- UI 업로드 허용 형식 일치: Streamlit 이력서/JD 업로드 확장자에 `.csv`를 포함해 로더(`.txt/.md/.csv/.pdf/.docx/.xlsx`)와 동일 정책으로 정렬
 - FastAPI `/chat` 예외 처리 강화: `ValueError -> 400`, 기타 예외 -> `500`
 - 실행/운영 문서 업데이트: README Troubleshooting 섹션 추가
 - Streamlit UI 업데이트: 세션 ID 자동 관리, 새 대화 시작, 실행 입력 기록의 다시 불러오기(질문/직무/이력서/결과 복원)
