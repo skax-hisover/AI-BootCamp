@@ -250,10 +250,10 @@ python scripts/validate_knowledge_metadata.py --strict
 
 ```mermaid
 flowchart LR
-    A[MemorySaver<br/>LangGraph runtime checkpointer] -->|프로세스 내 실행 중 복원| G[Graph Execution]
+    A["MemorySaver\nLangGraph runtime checkpointer"] -->|프로세스 내 실행 중 복원| G[Graph Execution]
     B[session_memory.json] -->|재시작 이후 대화 이력 복원| G
     C[final_answer_cache.json] -->|재시작 이후 동일 요청 최종 응답 재사용| G
-    D[graph_state_cache.json<br/>(legacy)] -->|일회성 마이그레이션| C
+    D["graph_state_cache.json\n(legacy)"] -->|일회성 마이그레이션| C
 ```
 
 - 책임 경계: `MemorySaver`는 **프로세스 내(runtime) 그래프 상태 복원** 전용, `session_memory.json/final_answer_cache.json`은 **재시작 이후 복원/재사용** 전용입니다.
